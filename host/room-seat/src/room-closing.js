@@ -1,0 +1,152 @@
+// room-closing.js: DOC '99 rooms, L2 lease closing (doc-arcade
+// docs/rooms/jp-close-grace.md, revision 9, on claude/m3-rooms-l2). What a
+// lease reply says about closing, which clock applies, and when a seat must
+// be ejected so its eject save lands before closing_until. Pure and
+// browser-safe: the room server (tools/room-server/manager.mjs) uses it for
+// its race, result and seat_ip replies, and a seat's lease client can use it
+// for its heartbeat reply (same shape).
+// Copyright (C) 2026 John R Reeves III
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// The reply shapes (section 5, section 8, and the lease route):
+//   200 { ok: true, closing: true, closing_until, race_nonce, ... }     a heartbeat on a closing lease (never extended)
+//   200 { ok: true, closing: true, do_not_enter: true, ... }            a race_enter while closing (recorded while_closing)
+//   200 { ok: true, closing: true, closing_until, closing_reason }      seat_ip at the household cap ('ip_cap')
+//   200 { ok: true, closing: true, closing_until, closing_reason, already: true }   a retried seat_ip
+//   409 { ok: false, error: 'closing', closing_until }                  a lease already in closing (seat_ip at the cap, race_enter, checkout)
+//   200 { ok: true, closing: true, closing_until }                      a double close
+// And the cap signal, closing or not (section 3): eject_after_race: true on
+// the race_enter reply and the heartbeat reply.
+
+// G and H (section 5, the proposed policy values). closing_until from the
+// reply is the only clock (section 5, "closing_until is the only clock"); these
+// are used only when a reply names no closing_until.
+export const CLOSE_GRACE_S = 30;
+export const INSERTED_HOLD_S = 600;
+// The eject save (section 4), on DOC '99: "0. Read the slot. ... 1. Otherwise,
+// press CARD and poll the slot every 0.5 s, for up to 10 s. ... 3. Before
+// posting, persist the ejected bytes ... 4. Post the room write ... 5. Then
+// close." Its time budget, from the doc's numbers and the seat's own steps:
+export const CARD_POLL_MS = 500; // "poll the slot every 0.5 s"
+export const CARD_POLL_TIMEOUT_MS = 10000; // "for up to 10 s"
+// One frame: one card_reader::insertCard call, as standalone flycast makes per
+// press (libretro calls it on every held frame of JOYPAD_L). Conductor
+// ruling; lab run 4 tries a 6-frame hold as its case 2, for comparison only.
+export const CARD_PRESS_FRAMES = 1;
+export const CARD_FINAL_MS = 12000; // leave(): the board's last card look (its timeout, mp-seat.js)
+export const LEAVE_SETTLE_MS = 300; // leave(): the last write reaches the link worker before the close
+export const POST_MS = 3000; // the write and the close over the reliable channel, and the room's post
+// The seat waits for the board's answer this long: the board's own 10 s poll
+// plus a second for the last frame and the message (mp-seat-eject.js).
+export const CARD_EJECT_WAIT_MS = CARD_POLL_TIMEOUT_MS + 1000;
+// The whole save, on DOC '99 (with the CARD press) and on Rev C (none: the
+// card file is present all along and each race has its own save).
+export const EJECT_SAVE_MS = CARD_EJECT_WAIT_MS + CARD_FINAL_MS + LEAVE_SETTLE_MS + POST_MS; // 26300
+export const REVC_SAVE_MS = CARD_FINAL_MS + LEAVE_SETTLE_MS + POST_MS; // 15300
+// The room page lets the seat do the save for at most the whole save, and
+// never past closing_until less a margin; the room server asks for the eject
+// at least the save plus that margin before closing_until (EJECT_LEAD_MS).
+export const DEADLINE_MARGIN_MS = 3000;
+export const EJECT_GRACE_MAX_MS = EJECT_SAVE_MS;
+export const EJECT_GRACE_MIN_MS = 2000;
+export const EJECT_LEAD_MS = EJECT_SAVE_MS + DEADLINE_MARGIN_MS; // 29300
+
+const HEX64 = /^[0-9a-f]{64}$/;
+const at = (v) => {
+  if (typeof v !== 'string' || v.length > 40) return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+};
+
+// closingFromReply(body, { nowMs, raceRunning }) -> null when the reply does
+// not say closing, else
+//   { untilMs, atMs, reason, raceNonce, raceRunning, doNotEnter, already, clock }
+// clock names where untilMs came from: 'closing_until' (the reply), or the
+// section 5 table when the reply names none: 'closing_at + G' (no race
+// running) or 'closing_at + H' (a race running: entered, no result). Without
+// closing_at the table starts from nowMs.
+export function closingFromReply(body, { nowMs = Date.now(), raceRunning = false } = {}) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const closing = body.closing === true || body.error === 'closing' || body.code === 'closing';
+  if (!closing) return null;
+  const atMs = at(body.closing_at);
+  const given = at(body.closing_until);
+  const reason = typeof body.closing_reason === 'string' && /^[a-z_]{1,32}$/.test(body.closing_reason) ? body.closing_reason : null;
+  const n = typeof body.race_nonce === 'string' ? body.race_nonce.toLowerCase() : '';
+  const raceNonce = HEX64.test(n) ? n : null;
+  // The heartbeat names the running race's nonce, or null (section 5).
+  const running = raceRunning === true || raceNonce !== null;
+  let untilMs = given;
+  let clock = 'closing_until';
+  if (untilMs === null) {
+    untilMs = (atMs ?? nowMs) + (running ? INSERTED_HOLD_S : CLOSE_GRACE_S) * 1000;
+    clock = running ? 'closing_at + H' : 'closing_at + G';
+  }
+  return { untilMs, atMs, reason, raceNonce, raceRunning: running, doNotEnter: body.do_not_enter === true, already: body.already === true, clock };
+}
+
+// The cap signal (section 3): eject after this race, closing or not.
+export const ejectAfterRace = (body) => !!body && typeof body === 'object' && body.eject_after_race === true;
+
+// Two views of one lease's closing. A hint (hint: true, the seat's own
+// report, the player's) is weaker than every value from this server's own
+// lease call, computed or named: a server value after a hint is taken
+// outright, and a hint never replaces a server value. Between two server
+// values (or two hints) the newer wins when it names closing_until (the
+// server's clock), and a computed deadline never replaces a named one,
+// except that a do_not_enter race reply (the race runs; the server holds the
+// seat to closing_at + H) never lowers the deadline below its own. Between
+// two computed hints the earlier deadline stays (a hint without
+// closing_until must not slide on every poll).
+export function mergeClosing(prev, next) {
+  if (!prev) return next;
+  if (!next) return prev;
+  if (prev.hint && !next.hint) return { ...next, reason: next.reason ?? prev.reason ?? null, atMs: next.atMs ?? prev.atMs ?? null, ejectNow: !!next.ejectNow, hint: false };
+  if (next.hint && !prev.hint) return prev;
+  const serverNext = next.clock === 'closing_until';
+  const serverPrev = prev.clock === 'closing_until';
+  let keep = serverPrev && !serverNext ? prev : next;
+  if (next.doNotEnter && keep !== next && next.untilMs > keep.untilMs) keep = next;
+  if (prev.hint && next.hint && !serverPrev && !serverNext && prev.untilMs <= next.untilMs) keep = prev;
+  return { ...keep, reason: keep.reason ?? prev.reason ?? next.reason, atMs: keep.atMs ?? prev.atMs ?? next.atMs, ejectNow: !!(prev.ejectNow || next.ejectNow), hint: !!(prev.hint && next.hint) };
+}
+
+// The running race's result arrived while closing (section 5 table, row 3):
+// closing_until = least(closing_at + H, now + G), unless the result reply
+// itself names closing_until (then that, through mergeClosing).
+export function afterResult(c, nowMs) {
+  if (!c) return c;
+  const hold = c.atMs !== null && c.atMs !== undefined ? c.atMs + INSERTED_HOLD_S * 1000 : c.untilMs;
+  return { ...c, untilMs: Math.min(hold, nowMs + CLOSE_GRACE_S * 1000), raceRunning: false, clock: c.clock === 'closing_until' ? 'least(closing_at + H, result + G)' : c.clock };
+}
+
+// When the seat must be ejected. The card cannot come out while a race runs
+// (JP ignores CARD then, section 1), so with a race running the eject waits
+// for its result, or until closing_until less the eject lead, whichever is
+// first; with none it is now. ejectNow (L1's closed: the lease is closed
+// already, nothing waits for a save) is at once.
+export function ejectDue(c, { raceRunning, nowMs }) {
+  if (!c) return false;
+  if (c.ejectNow) return true;
+  if (!raceRunning) return true;
+  return nowMs >= c.untilMs - EJECT_LEAD_MS;
+}
+
+// How long the room page lets the seat do its own eject save before it ends
+// the seat itself (the eject without the seat's help).
+export function ejectGraceMs(c, nowMs) {
+  const left = c ? c.untilMs - nowMs - DEADLINE_MARGIN_MS : EJECT_GRACE_MAX_MS;
+  return Math.max(EJECT_GRACE_MIN_MS, Math.min(EJECT_GRACE_MAX_MS, Math.floor(left)));
+}
+
+// Batch 1: the room seat's notice for a closing room or a last race (mp-seat.js showClosingNotice). c is the seat's
+// state.leaseClosing ({ until, reason, ejectAfterRace, closing } or null).
+export function closingNoticeText(c, fmt = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) {
+  if (!c) return '';
+  if (c.closing) {
+    const t = c.until ? Date.parse(c.until) : NaN;
+    return `This room is closing${Number.isFinite(t) ? ` at ${fmt(t)}` : ' soon'}. Finish your race; your card is saved and you go back to the rooms.`;
+  }
+  if (c.ejectAfterRace) return 'This is your last race on this seat. Your card comes out and is saved after it.';
+  return '';
+}

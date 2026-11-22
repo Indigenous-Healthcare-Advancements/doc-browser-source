@@ -1,0 +1,187 @@
+<!doctype html>
+<!-- mp-seat.html: the multiplayer seat page (M2, doc-ops MULTIPLAYER_SERVER.md).
+     One seat board, linked to a room (mp-room.html) over WebRTC DataChannels.
+     LAB: a lab seat ticket in the URL fragment (#ticket=, never the query),
+     LAN allowlist only. The room checks the lab card out to this
+     page; card writes go back to the room.
+     ROOM SEAT (M3 step 1b, docs/seat-contract.md): doc-arcade serves this page
+     at /room-seat with <meta name="doc-build" content="room-seat"> and the
+     room server metas; src/mp-seat.js then reads only the hand-off /rooms
+     left in sessionStorage and beats the lease (src/seat-lease.js).
+     Copyright (C) 2026 John R Reeves III. SPDX-License-Identifier: GPL-2.0-or-later. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DOC seat</title>
+<style>
+  body { margin: 0; background: #111; color: #ddd; font: 13px system-ui, sans-serif; }
+  header { padding: 8px 12px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  /* The picture fits the window (4:3, never wider than it is tall allows); full screen fills the screen. */
+  #stage { margin: 6px 12px; }
+  canvas { width: min(calc(100vw - 24px), calc((100vh - 120px) * 4 / 3), 1280px); aspect-ratio: 4 / 3; height: auto; background: #000; display: block; min-width: 320px; }
+  #stage:fullscreen { margin: 0; background: #000; display: flex; align-items: center; justify-content: center; }
+  #stage:fullscreen canvas { width: min(100vw, calc(100vh * 4 / 3)); }
+  /* Option A step 2: the room's main screen on top (8:3, both halves), the player's own screen below (4:3), sized
+     together by mp-seat.js fitMain (--mw, --sw); the pad keeps off the main screen and sits beside the player's. */
+  body.main-on #stage { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  body.main-on #main { display: block; width: var(--mw, 960px); aspect-ratio: 8 / 3; height: auto; background: #000; object-fit: contain; }
+  body.main-on #stage canvas { width: var(--sw, 480px); min-width: 0; margin-left: auto; margin-right: auto; }
+  body.main-on #stage:fullscreen { justify-content: flex-start; }
+  #status { white-space: pre; font-family: ui-monospace, monospace; font-size: 12px; padding: 6px 12px; }
+  #notice { margin: 4px 12px 0; padding: 8px 12px; background: #4a3a10; color: #ffe7a8; border: 1px solid #8a6a20; border-radius: 6px; font-size: 14px; }
+  #notice[hidden] { display: none; }
+  /* The waiting card (mp-seat.js seat wait): over the player's own screen until the game is on it. */
+  #stage { position: relative; }
+  #wait { position: absolute; z-index: 4; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 16px; box-sizing: border-box;
+    background: rgba(8, 12, 10, .92); color: #f2f0e8; text-align: center; pointer-events: none; }
+  #wait[hidden] { display: none; }
+  #wait-title { font-size: clamp(16px, 2.4vw, 22px); font-weight: 600; }
+  #wait-text { font-size: clamp(13px, 1.8vw, 16px); max-width: 34em; color: #d6d2c4; }
+  #wait-steps { display: flex; gap: 6px; }
+  #wait-steps i { width: 34px; height: 6px; border-radius: 3px; background: #4a4a44; }
+  #wait-steps i.done { background: #8cc2b0; }
+  #wait-steps i.now { background: #8cc2b0; animation: waitpulse 1.2s ease-in-out infinite; }
+  #wait-time { font-size: 12px; color: #a8a59c; font-variant-numeric: tabular-nums; }
+  @keyframes waitpulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { #wait-steps i.now { animation: none; } }
+  .seat-dlg, .cm-ov { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 10; }
+  .seat-dlg[hidden] { display: none; }
+  .seat-dlg > div, .cm-modal { background: #1d1d1d; color: #eee; border: 1px solid #444; border-radius: 8px; padding: 14px 16px; max-width: min(92vw, 520px); max-height: 88vh; overflow: auto; }
+  .seat-dlg p { margin: 0 0 12px; font-size: 14px; }
+  .seat-dlg button, .cm-modal button { font: inherit; color: #eee; background: #333; border: 1px solid #555; border-radius: 5px; padding: 5px 10px; cursor: pointer; }
+  .seat-dlg button.go { background: #7a2a1f; border-color: #a33; }
+  .cm-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .cm-head h2 { font-size: 16px; margin: 0; }
+  .cm-tabs { display: flex; gap: 6px; margin: 10px 0; }
+  .cm-tab.on { background: #2f5b8a; border-color: #4a7cb3; }
+  .cm-hint { color: #bbb; margin: 6px 0; }
+  .cm-note { color: #ffd27a; margin: 6px 0; }
+  .cm-rows { display: grid; gap: 4px; }
+  .cm-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; text-align: left; width: 100%; padding: 6px 8px; background: #262626; border: 1px solid #3a3a3a; border-radius: 5px; color: #eee; }
+  .cm-row.is-listening { border-color: #e0b040; }
+  .cm-act span { color: #aaa; }
+  .cm-binds { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+  .cm-binds kbd { background: #111; border: 1px solid #555; border-radius: 4px; padding: 2px 7px; font-family: ui-monospace, monospace; }
+  .cm-listen { color: #e0b040; }
+  .cm-none { color: #888; }
+  .cm-swap { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 8px 0; }
+  .cm-foot { margin-top: 10px; }
+  .cm-overlay { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-top: 12px; }
+  .cm-overlay small { color: #aaa; }
+  .cm-seg { display: inline-flex; border: 1px solid #555; border-radius: 6px; overflow: hidden; }
+  .cm-modal .cm-seg-opt { border: 0; border-radius: 0; background: #2a2a2a; color: #bbb; }
+  .cm-modal .cm-seg-opt + .cm-seg-opt { border-left: 1px solid #555; }
+  .cm-modal .cm-seg-opt.on { background: #2f5b8a; color: #fff; }
+  /* The on-screen buttons (room-seat-pad.js), drawn like the cabinet seat's (doc-arcade globals.css .docpad). The
+     container is a click-through layer over the whole viewport, inside #stage so it stays in full screen; every button
+     opts back in and sits at its saved centre. While it shows, the picture is centred so the two gutters are free. */
+  body.pad-on #stage canvas { margin-left: auto; margin-right: auto; }
+  .docpad { position: fixed; inset: 0; z-index: 5; pointer-events: none; }
+  .docbtn {
+    position: absolute; transform: translate(-50%, -50%); pointer-events: auto;
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; touch-action: none;
+    padding: 0; box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+    font: 800 13px system-ui, sans-serif; color: #fff;
+    border: 2px solid rgba(232, 236, 240, 0.55);
+    background: linear-gradient(180deg, rgba(150, 158, 166, 0.5), rgba(74, 82, 90, 0.5));
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+    transition: transform 90ms ease, filter 90ms ease; cursor: pointer;
+  }
+  .docbtn:active { transform: translate(-50%, -50%) scale(0.94); filter: brightness(1.25); }
+  .docbtn .dm-txt { font-size: 15px; letter-spacing: 0.5px; line-height: 1; }
+  .docbtn .dm-card { width: 62%; height: auto; }
+  /* No horse artwork here (no image assets): in the cabinet skin Hold and Whip carry their word, as printed on the
+     deck, a little larger than the cabinet seat's caption. */
+  .docbtn .dm-word { font-size: 16px; line-height: 1; letter-spacing: 1px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45); max-width: 92%; overflow: hidden; }
+  .docbtn .dm-word:lang(ja) { letter-spacing: 0; font-size: 18px; }
+  /* Arrows: bare silver triangles on the plate, in a square touch target. */
+  .docbtn.dpad { border: 0; background: none; box-shadow: none; color: #e6eaee; filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.5)); }
+  .docbtn.dpad .dm-arrow { width: 88%; height: 88%; }
+  .docbtn.dpad.down .dm-arrow { transform: rotate(180deg); }
+  .docbtn.dpad.left .dm-arrow { transform: rotate(-90deg); }
+  .docbtn.dpad.right .dm-arrow { transform: rotate(90deg); }
+  .docbtn.dpad:active { color: #d8a630; }
+  /* OK, the red square; START, the round yellow button; Hold green and Whip red, the two big rounds; the white card. */
+  .docbtn.ok { border-radius: 10px; background: linear-gradient(180deg, #e0464a, #a51d22); }
+  .docbtn.start { border-radius: 50%; background: linear-gradient(180deg, #f6d658, #d8a630); color: #2b2310; }
+  .docbtn.start .dm-txt { font-size: 12px; }
+  .docbtn.hold { border-radius: 50%; background: linear-gradient(180deg, #3cc06a, #1d7a3f); }
+  .docbtn.whip { border-radius: 50%; background: linear-gradient(180deg, #f05a5a, #a81f1f); }
+  .docbtn.card { border-radius: 10px; background: linear-gradient(180deg, #f4f7f9, #c9d2d8); color: #0e6b72; }
+  /* CLASSIC skin: flat translucent rounded caps with the word, gold on press, Whip red and Hold green. */
+  .docpad.classic .docbtn { border: 0; border-radius: 12px; background: rgba(28, 36, 44, 0.65); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35); color: #fff; }
+  .docpad.classic .docbtn:active { background: rgba(216, 166, 48, 0.9); color: #1a1408; filter: none; }
+  .docpad.classic .docbtn.dpad { filter: none; }
+  .docpad.classic .docbtn.dpad .dm-arrow { width: 52%; height: 52%; }
+  .docpad.classic .docbtn.dpad .dm-arrow polygon { stroke: none; }
+  .docpad.classic .docbtn.whip { background: rgba(168, 31, 31, 0.92); }
+  .docpad.classic .docbtn.whip:active { background: rgba(240, 90, 90, 0.95); color: #1a1408; }
+  .docpad.classic .docbtn.hold { background: rgba(29, 122, 63, 0.92); }
+  .docpad.classic .docbtn.hold:active { background: rgba(88, 210, 130, 0.95); color: #10240f; }
+  .docpad.classic .docbtn .dm-word { font-size: 17px; letter-spacing: 1px; }
+  .docpad.classic .docbtn .dm-word:lang(ja) { font-size: 18px; letter-spacing: 0; }
+  .docpad.classic .docbtn .dm-txt { font-size: 14px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); }
+  /* Arrange mode: the buttons are drag handles and press nothing. */
+  .docpad.arranging .docbtn { cursor: grab; filter: saturate(0.75); outline: 2px dashed rgba(216, 166, 48, 0.9); outline-offset: 3px; }
+  .docpad.arranging .docbtn.lifted { cursor: grabbing; filter: none; z-index: 2; transform: translate(-50%, -50%) scale(1.14); box-shadow: 0 10px 24px rgba(0, 0, 0, 0.6); outline-color: #d8a630; }
+  .docpad.arranging .docbtn:active { transform: translate(-50%, -50%) scale(1.06); }
+  .docpad.arranging .docbtn.lifted:active { transform: translate(-50%, -50%) scale(1.14); }
+  .docpad .docbtn.selected { outline: 3px solid #d8a630; outline-offset: 3px; box-shadow: 0 0 0 9px rgba(0, 0, 0, 0.7); z-index: 2; }
+  @media (prefers-reduced-motion: reduce) { .docbtn { transition: none; } }
+  /* The arrange panel sits under the header, over the picture: while arranging nobody is watching a race. */
+  .padarrange {
+    position: fixed; z-index: 6; left: 50%; transform: translateX(-50%); top: 14px;
+    display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 16px; border-radius: 12px;
+    width: min(92vw, 420px); box-sizing: border-box; text-align: center; color: #eee;
+    border: 1px solid #444; background: rgba(12, 16, 22, 0.92); box-shadow: 0 8px 26px rgba(0, 0, 0, 0.5);
+  }
+  .padarrange small { color: #aaa; }
+  .padarrange button { font: inherit; color: #eee; background: #2a2a2a; border: 1px solid #444; border-radius: 8px; cursor: pointer; }
+  .padarrange-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 4px; }
+  .padarrange-row button { padding: 7px 14px; font-size: 13px; font-weight: 600; }
+  .padarrange .pa-done { border: 0; background: #d8a630; color: #1a1408; }
+  .padstyle, .padsize { display: flex; align-items: center; gap: 8px; margin-top: 2px; width: 100%; }
+  .padstyle-seg { display: flex; margin-left: auto; border: 1px solid #444; border-radius: 8px; overflow: hidden; }
+  .padarrange .padstyle-opt { padding: 6px 12px; font-size: 12px; font-weight: 600; border: 0; border-radius: 0; color: #bbb; }
+  .padarrange .padstyle-opt + .padstyle-opt { border-left: 1px solid #444; }
+  .padarrange .padstyle-opt.on { background: #d8a630; color: #1a1408; }
+  .padsize-lbl { font-size: 12px; color: #bbb; white-space: nowrap; }
+  .padsize input[type="range"] { flex: 1 1 auto; min-width: 90px; accent-color: #d8a630; cursor: pointer; }
+  .padarrange .padsize-step { flex: 0 0 auto; width: 30px; height: 30px; padding: 0; font-size: 17px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
+  .padarrange .padsize-step:disabled { opacity: 0.4; cursor: default; }
+  .padsize-val { flex: 0 0 auto; min-width: 42px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .padarrange .padsize-all { flex: 0 0 auto; padding: 5px 9px; font-size: 11px; font-weight: 600; color: #bbb; }
+  .padarrange .padsize-all[hidden] { display: none; }
+  @media (max-width: 480px) {
+    .padsize { flex-wrap: wrap; row-gap: 4px; }
+    .padsize .padsize-lbl { flex: 0 0 calc(100% - 100px); text-align: left; overflow: hidden; text-overflow: ellipsis; }
+    .padsize:not(.has-extra) .padsize-lbl { flex-basis: 100%; }
+    .padstyle-seg { flex-shrink: 0; }
+    .padarrange .padsize-all { margin-left: auto; }
+    .padsize input[type="range"] { flex: 1 1 60px; min-width: 60px; }
+    .docbtn .dm-txt { font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <label>Game and BIOS: <input id="rom-input" type="file" multiple accept=".zip"></label>
+  <button id="leave" disabled>Leave seat</button>
+  <button id="controls" hidden title="Customize your keys and controller">Controls</button>
+  <button id="pad" hidden aria-pressed="false" title="Show or hide the on-screen buttons">Show buttons</button>
+  <button id="pad-arrange" hidden title="Move, size and fade the on-screen buttons">Arrange buttons</button>
+  <button id="fullscreen" hidden title="Full screen (F)">Full screen</button>
+  <button id="forget" hidden>Forget cached game files</button>
+  <span id="msg">Seat page. Lab: opened with #ticket= from a lab room.</span>
+</header>
+<div id="notice" hidden role="status"></div>
+<div id="stage"><video id="main" hidden muted autoplay playsinline aria-label="Main screen"></video><canvas id="screen" width="640" height="480"></canvas><div id="wait" hidden role="status" aria-live="polite"><div id="wait-title"></div><div id="wait-steps"><i></i><i></i><i></i><i></i></div><div id="wait-text"></div><div id="wait-time"></div></div></div>
+<div id="status"></div>
+<div id="leave-confirm" class="seat-dlg" hidden role="dialog" aria-modal="true" aria-labelledby="leave-q"><div>
+  <p id="leave-q">Leave this seat? Your card comes out and is saved before you go.</p>
+  <button id="leave-yes" class="go">Leave</button> <button id="leave-no">Stay</button>
+</div></div>
+<script type="module" src="./src/mp-seat.js"></script>
+</body>
+</html>
