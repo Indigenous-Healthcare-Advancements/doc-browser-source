@@ -32,7 +32,11 @@ export const PAD_STORAGE_KEY = 'doc_padlayout_v1';
 // style, sizes and opacity (the player's preferences); positions start from this page's computed defaults.
 export const ROOM_PAD_STORAGE_KEY = 'doc_room_padlayout_v1';
 const SEEDED = ['style', 'scales', 'perScales', 'opacity'];
-const ORIENTATIONS = ['landscape', 'portrait'];
+// The touch layout (room-seat-layout.js) keeps its own two records: the page is laid out differently there, so an
+// arrangement made on one must never be applied to the other.
+const ORIENTATIONS = ['landscape', 'portrait', 'landscape-touch', 'portrait-touch'];
+/** The record a geometry's arrangement is kept under: the orientation, or its touch layout twin. */
+export function layoutSlot(o, g) { return g && g.preset ? `${o}-touch` : o; }
 const isPlainObject = (o) => !!o && typeof o === 'object' && !Array.isArray(o);
 const finite = (n) => typeof n === 'number' && Number.isFinite(n);
 
@@ -177,15 +181,30 @@ const rectOf = (r) => (r && finite(r.l) && finite(r.t) && finite(r.r) && finite(
 /**
  * The geometry every other function reads: the viewport and its two zones, in px.
  * measured: { picture: {l,t,r,b}, headerBottom: px, fullscreen: bool }, any part missing is computed (above).
+ * measured.preset: { action: { cx, cy, size } } in px for all nine controls (the touch layout,
+ * room-seat-layout.js padPreset): then the default arrangement and the default sizes are exactly these, and the
+ * fit sweep below is not used. A preset missing any control is ignored.
  */
+function presetOf(p, vw, vh) {
+  if (!isPlainObject(p)) return null;
+  const out = {};
+  for (const a of PAD_ACTIONS) {
+    const s = p[a];
+    if (!isPlainObject(s) || !finite(s.cx) || !finite(s.cy) || !finite(s.size) || !(s.size > 0)) return null;
+    out[a] = Object.freeze({ x: (s.cx / vw) * 100, y: (s.cy / vh) * 100, size: s.size });
+  }
+  return Object.freeze(out);
+}
 export function padGeometry(vw, vh, measured = {}) {
   const m = isPlainObject(measured) ? measured : {};
   const fullscreen = !!m.fullscreen;
   const hb = fullscreen ? 0 : finite(m.headerBottom) ? Math.max(0, Math.min(vh, m.headerBottom)) : Math.min(vh, fallbackHeaderPx(vw));
   const picture = rectOf(m.picture) || pictureRect(vw, vh, hb, fullscreen);
   const header = { l: 0, t: 0, r: vw, b: hb };
-  const key = `${vw}x${vh}|${picture.l},${picture.t},${picture.r},${picture.b}|${hb}`;
-  return Object.freeze({ vw, vh, picture, header, key });
+  const preset = presetOf(m.preset, vw, vh);
+  const sig = preset ? PAD_ACTIONS.map((a) => `${Math.round(preset[a].x * 100)},${Math.round(preset[a].y * 100)},${preset[a].size}`).join(';') : '';
+  const key = `${vw}x${vh}|${picture.l},${picture.t},${picture.r},${picture.b}|${hb}|${sig}`;
+  return Object.freeze({ vw, vh, picture, header, key, preset });
 }
 export function seatZones(g) { return { picture: g.picture, header: g.header }; }
 
@@ -245,6 +264,10 @@ export function scaleFor(action, g, user = PAD_SCALE_DEFAULT, per) {
 }
 /** Rendered size of one control on this screen, at the player's chosen sizes. */
 export function sizeOf(action, g, user = PAD_SCALE_DEFAULT, per) {
+  if (g.preset) {
+    const base = g.preset[action].size;
+    return Math.max(Math.round(base * effectiveScale(action, user, per)), Math.min(MIN_TAP_PX, Math.round(base)));
+  }
   const chosen = Math.round(PAD_SIZE[action] * scaleFor(action, g, user, per));
   const atDefault = Math.round(PAD_SIZE[action] * scaleFor(action, g));
   return Math.max(chosen, Math.min(MIN_TAP_PX, atDefault));
@@ -252,6 +275,8 @@ export function sizeOf(action, g, user = PAD_SCALE_DEFAULT, per) {
 
 /** The out-of-the-box arrangement: the cross bottom-left, the action cluster bottom-right. */
 export function defaultLayout(g, user = PAD_SCALE_DEFAULT) {
+  // The touch layout's own places: the page has already made room for them.
+  if (g.preset) { const out = {}; for (const a of PAD_ACTIONS) out[a] = { x: g.preset[a].x, y: g.preset[a].y }; return out; }
   const f = padFit(g);
   const u = clampUserScale(user);
   const out = {};

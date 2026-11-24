@@ -52,7 +52,7 @@
 // 'closed' ends it as 'gone'.
 
 import { closingFromReply, DEADLINE_MARGIN_MS } from './room-closing.js';
-import { serverNow } from './room-seat-handoff.js';
+import { serverNow, isNewHorse } from './room-seat-handoff.js';
 
 export const LEASE_API = '/api/room/lease';
 export const REQUEST_TIMEOUT_MS = 15000;
@@ -75,6 +75,33 @@ export function classifyBeat(r) {
   if (s === 400) return 'bug';
   if (s === 409 && r.body && (r.body.code === 'wrong_room' || r.body.error === 'wrong_room')) return 'wrong_room';
   return 'refused';
+}
+
+/**
+ * Read a checkout's 2xx body against the hand-off (the page's checkOut). Pure.
+ *   { ok: true, newHorse: false, card: Uint8Array, lastSeq, memberHash }   a horse with a card, as ever
+ *   { ok: true, newHorse: true, card: null, lastSeq, memberHash }          a NEW HORSE: no card to load
+ *   { ok: false, why }                                                     refused (a seat bug before play)
+ * A NEW HORSE (doc-arcade roomSeatHandoff.ts checklist item 6) only when BOTH the hand-off and the checkout say
+ * new_horse: true AND the checkout hands out no card (card_b64 null). Any other mix (one side only, or new_horse
+ * with card bytes) is refused. Without the flag on either side: the rules as before (a card is required).
+ */
+export function readCheckout(body, handoff) {
+  const b = body && typeof body === 'object' ? body : {};
+  const mh = typeof b.member_hash === 'string' ? b.member_hash : '';
+  if (!HEX64.test(mh)) return { ok: false, why: 'checkout without member_hash' };
+  if (!handoff || !Number.isSafeInteger(b.last_seq) || b.last_seq < 0 || b.horse_id !== handoff.horse_id) return { ok: false, why: 'checkout answer refused' };
+  const wantsNew = isNewHorse(handoff);
+  const saysNew = b.new_horse === true;
+  if (wantsNew || saysNew) {
+    const noCard = b.card_b64 === null || b.card_b64 === undefined || b.card_b64 === '';
+    if (!(wantsNew && saysNew && noCard)) return { ok: false, why: 'checkout answer refused (new horse)' };
+    return { ok: true, newHorse: true, card: null, lastSeq: b.last_seq, memberHash: mh };
+  }
+  let bytes = null;
+  try { bytes = Uint8Array.from(atob(String(b.card_b64 || '')), (ch) => ch.charCodeAt(0)); } catch { bytes = null; }
+  if (!bytes || bytes.length === 0) return { ok: false, why: 'checkout answer refused' };
+  return { ok: true, newHorse: false, card: bytes, lastSeq: b.last_seq, memberHash: mh };
 }
 
 const message = (body) => (body && typeof body.error === 'string' ? body.error.replace(/[^\x20-\x7e]/g, '').slice(0, 200) : null);

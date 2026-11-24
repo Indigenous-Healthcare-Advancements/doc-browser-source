@@ -28,7 +28,9 @@
 #include "network/linkbus.h"
 #include "hw/naomi/naomi.h"
 #include "hw/naomi/naomi_regs.h"
+#include "hw/flashrom/nvmem.h"
 #include <emscripten.h>
+#include <cstring>
 
 extern "C" EMSCRIPTEN_KEEPALIVE void shim_lb_configure(int boardId, int networkEnable,
 		int actAsServer, int multiboardSlaves)
@@ -58,4 +60,30 @@ extern "C" EMSCRIPTEN_KEEPALIVE int shim_lb_status(u32 *out)
 	out[6] = settings.naomi.multiboard ? 1 : 0;
 	out[7] = settings.naomi.slave ? 1 : 0;
 	return 8;
+}
+
+// Battery memory (the room server's saved memory, host/src/room-nvmem.js):
+// copies the board's battery backed RAM (NAOMI: 32 KB, the bytes
+// nvmem::saveFiles would write to <base>-main.nvmem or <base>.nvmem) into
+// out and returns the byte count. Returns 0, and writes nothing, before a
+// game was loaded (no platform set yet), on a console, when out is null or
+// when cap is too small. Call it only while a game is loaded (after
+// shim_load_game returned 1; the host never unloads a game).
+// A plain copy of host memory between frames: it reads no guest address
+// (so no access handler runs), charges nothing to the guest clock, and
+// writes neither a file nor any emulator state. The EEPROM needs no export:
+// the core writes <base>.eeprom at every EEPROM write and the host reads
+// that file.
+extern "C" EMSCRIPTEN_KEEPALIVE u32 shim_nvmem_copy(u8 *out, u32 cap)
+{
+	if (out == nullptr || settings.platform.isConsole())
+		return 0;
+	const u32 size = settings.platform.flash_size;
+	if (size == 0 || size > cap)
+		return 0;
+	const u8 *data = nvmem::getFlashData();
+	if (data == nullptr)
+		return 0;
+	memcpy(out, data, size);
+	return size;
 }

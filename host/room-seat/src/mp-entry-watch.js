@@ -81,11 +81,14 @@ export function entryWatchFor(seats, game = REVC_GAME) {
 // to be confirmed in a lab room; that lane + 1 is the number on the horse is not established. Four seat rooms
 // only (three records a station, the 816-byte path); Rev C, Rev D and DOC 2000 share the layout. Addresses only.
 export const OWNER_RECORDS = 3;
+// Eight seat rooms (2026-11-23): the 576-byte path, two records on stations 1 to 4 and one on stations 5 to 8 (the
+// game's seat table; mp-race-telemetry.js SEAT_RECORDS).
+export const OWNER_RECORDS_8 = Object.freeze([2, 2, 2, 2, 1, 1, 1, 1]);
 export function ownerWatchFor(seats, game = REVC_GAME) {
   const w = ENTRY_WORDS[String(game || '').toLowerCase()];
-  if (!w || seats !== 4) return [];
+  if (!w || (seats !== 4 && seats !== 8)) return [];
   const out = [];
-  for (let k = 1; k <= seats; k++) for (let j = 0; j < OWNER_RECORDS; j++) out.push([`own${k}_${j}`, w.rx4 + 816 * k + 96 + 240 * j + 76]);
+  for (let k = 1; k <= seats; k++) for (let j = 0; j < (seats === 8 ? OWNER_RECORDS_8[k - 1] : OWNER_RECORDS); j++) out.push([`own${k}_${j}`, (seats === 8 ? w.rx8 + 576 * k : w.rx4 + 816 * k) + 96 + 240 * j + 76]);
   return out;
 }
 export const ownerOf = (word) => ({ controller: word & 0xff, lane: (word >>> 8) & 0xff, finish: (word >>> 16) & 0xff });

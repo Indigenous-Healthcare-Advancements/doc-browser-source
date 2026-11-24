@@ -218,7 +218,7 @@ $Exports = @(
     '_wasm_exec_ifb', '_wasm_exec_shil_fb', '_wasm_sq_pref',
     '_wasm_div32u', '_wasm_div32s', '_wasm_div1',
     '_fly_jit_selftest', '_fly_test_clock_jitter', '_fly_test_bridge_charge',
-    '_shim_lb_configure', '_shim_lb_status',
+    '_shim_lb_configure', '_shim_lb_status', '_shim_nvmem_copy',
     '_linkbus_install_mailbox', '_linkbus_uninstall_ring',
     '_linkbus_install_sab_multiboard', '_linkbus_install_sab_multiboard_snapshot', '_linkbus_sab_snapshot_bytes', '_linkbus_mb_stats', '_linkbus_install_vblank_barrier', '_linkbus_pacer_frames', '_linkbus_pacer_frame_run',
     '_linkbus_stats', '_linkbus_ring_stats'

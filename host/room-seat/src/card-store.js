@@ -63,6 +63,20 @@ export function mountCard(FS, saveDir, gameFileName, bytes) {
   return path;
 }
 
+// A NEW HORSE: no card is put in the reader. The core's reader then holds no card (CardReaderWriter::insertCard
+// finds no file and stays empty), and the game's own new horse flow asks the reader for a new card from its stock
+// (the Sanwa reader's "new card" command, CARD_NEW, which the core answers with a card present and no file read),
+// then writes the horse onto it: CARD_WRITE makes the card file (saveCard, fopen "wb"). So "no card" is NO FILE at
+// the card path; there are no blank card bytes to make up, and none are written here. This only makes the folder
+// the core will write into and returns the path to watch (createCardWatcher with no initial bytes: the first
+// write is the new card). A file already there would be taken for the new horse's card, so it is refused.
+export function prepareNewCard(FS, saveDir, gameFileName) {
+  const path = coreCardPath(saveDir, gameFileName);
+  mkdirp(FS, path.slice(0, path.lastIndexOf('/')));
+  if (readCoreCard(FS, path) !== null) throw new Error('a card file is already in the reader');
+  return path;
+}
+
 // Reads the card file back from the core's FS; null when there is none.
 export function readCoreCard(FS, path) {
   try {
@@ -96,6 +110,41 @@ export function createCardWatcher(FS, path, initial, onChange) {
     changes: () => changes,
     current: () => (last ? new Uint8Array(last) : null),
   };
+}
+
+// CHANGING THE CARD IN THE READER WHILE THE BOARD RUNS (the room seat's horse change; lb-board-worker.js
+// 'card-swap'). The card in the reader is the file at the core's card path, and the core reads that file only when
+// the insert button goes down, so the file can be changed between two frames:
+//   1. one LAST poll of the old watcher: a change the game made to the old card is reported through the OLD
+//      watcher's own onChange (so the page gets it under the old card's generation), before anything is touched;
+//   2. the new card is written at the path (bytes), or the file is REMOVED (bytes null: an empty reader, for a new
+//      horse the member makes in the game), or left as it is (adopt: the card the game itself wrote there is taken
+//      as the new generation's);
+//   3. a NEW watcher starts with the new bytes as its baseline, so the mount itself is never reported as a write.
+//      With no bytes its baseline is "no card": the first card the game writes is the new card. With adopt the
+//      baseline is also "no card", so the card already in the reader is reported ONCE, by the new watcher's first
+//      poll, as the new generation's first write.
+// Returns { path, watcher, lastChanged (step 1 reported a change), removed (a file was taken out) }. A card of the
+// wrong size is refused before anything changes (the old watcher is still polled first: that is always safe).
+export function swapCoreCard(FS, saveDir, gameFileName, oldWatcher, bytes, onChange, { adopt = false } = {}) {
+  const path = coreCardPath(saveDir, gameFileName);
+  if (bytes !== null && bytes !== undefined) {
+    if (!(bytes instanceof Uint8Array)) throw new Error('card bytes must be a Uint8Array');
+    const sizeErr = checkCardSize(bytes.length);
+    if (sizeErr) throw new Error(sizeErr);
+  }
+  const lastChanged = oldWatcher ? oldWatcher.poll() : false;
+  let removed = false;
+  if (bytes) mountCard(FS, saveDir, gameFileName, bytes);
+  else {
+    mkdirp(FS, path.slice(0, path.lastIndexOf('/')));
+    if (!adopt && readCoreCard(FS, path) !== null) {
+      FS.unlink(path);
+      if (readCoreCard(FS, path) !== null) throw new Error('the card could not be taken out of the reader');
+      removed = true;
+    }
+  }
+  return { path, watcher: createCardWatcher(FS, path, bytes || null, onChange), lastChanged, removed };
 }
 
 function defaultGetRoot() {

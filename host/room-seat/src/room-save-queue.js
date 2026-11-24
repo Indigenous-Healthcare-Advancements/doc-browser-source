@@ -41,6 +41,26 @@
 //                             the queue stops: every write left stays held
 //   anything else (409 stint_open, closing and the rest, 422 a judge's
 //   refusal, 500)             this write is held, the queue goes on
+//
+// A NEW HORSE (the option newHorse; doc-arcade roomSeatHandoff.ts checklist item 6). The lease's horse has no card
+// yet: the game makes it, and its FIRST write that lands creates it ({ ok: true, created: true, card: { id,
+// horse_name, rom, created_at }, race_settled: false }). Everything above holds unchanged (the first seq is still
+// checkout's last_seq + 1, one POST at a time, the stash first), with three differences, all behind the option:
+//   the name     the hand-off's horse_name is "" on purpose and is never posted as a name. Until the horse is
+//                created a save names what the cardName seam reads from the card (see cardName below; with no seam,
+//                "", which the route answers with the card's own name: a pilot horse's name is always the card's).
+//                Once created, every save names the horse_name the route answered with.
+//   created      the first write that lands (the created reply, or a stale_seq saying an earlier try landed) is
+//                told to the page once (onCreated); from then on this is a normal seat's queue.
+//   refused      a first save the route refuses for the card itself (409 race_count: the card already carries a
+//                race; 422: it failed the birth check) is held like any refused write, never retried, and told to
+//                the page (onFirstRefused) so the member reads why in plain words. A later write is a new first save.
+//
+// THE OTHER HORSE (the answer's code 'other_horse', on a held answer; doc-arcade sends it with its 422). The card the
+// game wrote is not this lease's horse: the member made a new horse in the game on this seat, and the game wrote it
+// over the card file. The write is held like any refused write (kept in the stash, never retried), the queue goes on,
+// and the page is told ONCE (onOtherHorse), so it can stop the seat safely. Not for a NEW HORSE whose first save has
+// not landed: that refusal is its first save's (onFirstRefused), so the two never both fire for one answer.
 
 export const HOST_STABLE_API = '/api/connector/host-stable';
 export const REQUEST_TIMEOUT_MS = 15000;
@@ -66,6 +86,11 @@ export function classifySave(r) {
   return 'held';
 }
 
+/** A held answer that says the card is not this lease's horse (the route's code 'other_horse'). */
+export function isOtherHorse(r) {
+  return classifySave(r) === 'held' && !!r.body && typeof r.body === 'object' && r.body.code === 'other_horse';
+}
+
 /** Why a 'stop' answer stopped the queue. */
 export function stopReason(status) {
   if (status === 401) return 'token';
@@ -73,6 +98,9 @@ export function stopReason(status) {
   if (status === 402 || status === 403) return 'refused';
   return 'gone';
 }
+
+// A horse name as it is posted and shown: no control characters, trimmed, at most 64 (the route's own limit).
+const cleanName = (s) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64) : '');
 
 const toB64 = (bytes) => {
   let s = '';
@@ -95,13 +123,24 @@ const toB64 = (bytes) => {
  *   timeLeft      () ms the lease can still live: the bound on every retry
  *   onChange      ({ pending, held, stopped, next }) after every change
  *   onNote        (text) a page error the queue saw (a stale_seq last_seq above this seq)
+ *   newHorse      true for a NEW HORSE's lease (the header); false (the default) changes nothing
+ *   cardName      NEW HORSE only, THE SEAM: (bytes: Uint8Array) the name the game wrote on the card, or '' when it
+ *                 cannot be read. This repository holds no card layout, so the page passes none and "" is posted
+ *                 until the route's created reply names the horse. A reader added later plugs in here.
+ *   onCreated     NEW HORSE only: ({ seq, name }) once, when the first write landed (name: the route's, or null)
+ *   onFirstRefused  NEW HORSE only: ({ seq, status, why }) a first save refused for the card itself; why is
+ *                 'race_count' (409), 'rejected' (422) or 'refused' (any other held answer)
+ *   onOtherHorse  ({ seq, status }) ONCE per queue: a held answer with the code 'other_horse' (the card written is
+ *                 not this lease's horse). The write stays held, in the stash; nothing is retried.
  * Returns { write(bytes) -> seq, drain(ms) -> { left }, state(), stats(),
- *   unstashed() (writes neither landed nor kept in the stash, queued or held), stop() }.
+ *   unstashed() (writes neither landed nor kept in the stash, queued or held),
+ *   heldOther() (the held writes refused as another horse's card), stop() }.
  */
 export function createSaveQueue({
   handoff, firstSeq, stash = null, memberHash = null, edition = null,
   nonce = () => null, refreshNonce = async () => null, timeLeft = () => 0,
   onChange = () => {}, onNote = () => {},
+  newHorse = false, cardName = null, onCreated = () => {}, onFirstRefused = () => {}, onOtherHorse = () => {},
   fetchImpl = globalThis.fetch ? globalThis.fetch.bind(globalThis) : null,
   setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (t) => clearTimeout(t),
   now = () => Date.now(), timeoutMs = REQUEST_TIMEOUT_MS,
@@ -124,8 +163,46 @@ export function createSaveQueue({
   const waiters = [];
   const stats = { posts: 0, landed: 0, held: 0, blips: 0, stashFails: 0, lastStatus: null, landedSeq: null }; // landedSeq: the highest seq landed
 
-  const state = () => ({ pending: queue.length, held: heldItems.length, stopped, next });
+  // A NEW HORSE: created once its first write landed; newName is the route's name for it from then on.
+  const isNew = newHorse === true;
+  let created = !isNew;
+  let newName = '';
+  const state = () => ({ pending: queue.length, held: heldItems.length, stopped, next, ...(isNew ? { created } : {}) });
   const note = (t) => { try { onNote(t); } catch { /* the page's */ } };
+  // The name a save carries. A horse with a card: the hand-off's, as ever. A NEW HORSE: never the hand-off's empty
+  // name; the route's once created, else what the seam read from this write's card.
+  const nameOf = (item) => (isNew ? newName || item.name || '' : handoff.horse_name);
+  // A NEW HORSE's write is on the server (r: the answer that says so).
+  function sawCreated(item, r) {
+    if (created) return;
+    created = true;
+    const c = r && r.body && r.body.card && typeof r.body.card === 'object' ? r.body.card : null;
+    newName = cleanName(c ? c.horse_name : '') || item.name || '';
+    stats.createdSeq = item.seq;
+    try { onCreated({ seq: item.seq, name: newName || null }); } catch { /* the page's */ }
+  }
+  // A NEW HORSE's first save, refused for the card itself (held, never retried).
+  function sawFirstRefused(item, r) {
+    if (created) return;
+    const b = r && r.body ? r.body : {};
+    const why = r.status === 409 && (b.lease_error === 'race_count' || b.error === 'race_count' || b.code === 'race_count') ? 'race_count' : r.status === 422 ? 'rejected' : 'refused';
+    stats.firstRefused = { seq: item.seq, status: r.status, why };
+    try { onFirstRefused({ seq: item.seq, status: r.status, why }); } catch { /* the page's */ }
+  }
+  // A held answer (r): the other horse's card (told once), else a NEW HORSE's first save refused. Never both: the
+  // other horse is read only once the lease's horse has a card (created).
+  let otherTold = false;
+  function sawHeld(item, r) {
+    if (created && isOtherHorse(r)) {
+      item.other = true;
+      stats.otherHorse = (stats.otherHorse || 0) + 1;
+      if (otherTold) return;
+      otherTold = true;
+      try { onOtherHorse({ seq: item.seq, status: r.status }); } catch { /* the page's */ }
+      return;
+    }
+    sawFirstRefused(item, r);
+  }
   const changed = () => {
     try { onChange(state()); } catch { /* the page's */ }
     if (queue.length === 0 || stopped) for (const w of waiters.splice(0)) w();
@@ -148,7 +225,7 @@ export function createSaveQueue({
     let t = null;
     const timeout = new Promise((res) => { t = setTimer(() => { try { if (ctl) ctl.abort(); } catch { /* gone */ } res({ network: true, timeout: true }); }, waitMs); });
     const n = nonce();
-    const body = { id: handoff.horse_id, card_b64: item.b64, horse_name: handoff.horse_name, lease_id: handoff.lease_id, seq: item.seq };
+    const body = { id: handoff.horse_id, card_b64: item.b64, horse_name: nameOf(item), lease_id: handoff.lease_id, seq: item.seq };
     if (typeof n === 'string' && HEX64.test(n)) body.race_nonce = n;
     const call = (async () => {
       let res;
@@ -195,7 +272,8 @@ export function createSaveQueue({
     const kind = classifySave(r);
     const ls = r.body ? r.body.last_seq : undefined;
     if (kind === 'stale' && Number.isSafeInteger(ls) && ls > item.seq) note(`stale_seq last_seq ${ls} above seq ${item.seq}`);
-    if (kind !== 'landed' && !(kind === 'stale' && Number.isSafeInteger(ls) && ls >= item.seq)) return; // held, in the stash
+    if (kind !== 'landed' && !(kind === 'stale' && Number.isSafeInteger(ls) && ls >= item.seq)) { if (kind === 'held') sawHeld(item, r); return; } // held, in the stash
+    sawCreated(item, r);
     const i = heldItems.indexOf(item);
     if (i < 0) return;
     heldItems.splice(i, 1);
@@ -228,7 +306,7 @@ export function createSaveQueue({
         if (stopped) { await afterStop(item, r); break; }
         stats.lastStatus = r.network ? 0 : r.status;
         const kind = classifySave(r);
-        if (kind === 'landed') { await landed(item); changed(); continue; }
+        if (kind === 'landed') { sawCreated(item, r); await landed(item); changed(); continue; }
         if (kind === 'blip' || kind === 'later' || kind === 'wait') {
           stats.blips++;
           const ra = kind === 'wait' && r.body ? Number(r.body.retry_after_s) : NaN;
@@ -242,7 +320,7 @@ export function createSaveQueue({
         if (kind === 'stale') {
           const ls = r.body ? r.body.last_seq : undefined;
           if (Number.isSafeInteger(ls) && ls > item.seq) note(`stale_seq last_seq ${ls} above seq ${item.seq}`); // only this seat writes this lease
-          if (Number.isSafeInteger(ls) && ls >= item.seq) { await landed(item); changed(); continue; } // landed earlier
+          if (Number.isSafeInteger(ls) && ls >= item.seq) { sawCreated(item, r); await landed(item); changed(); continue; } // landed earlier
           holdHead(); // no last_seq, or a gap below this seq: held, in the stash
           changed();
           continue;
@@ -254,6 +332,7 @@ export function createSaveQueue({
         }
         if (kind === 'stop') { stop(stopReason(r.status)); break; }
         holdHead(); // 'held': this write is refused, it stays in the stash; the next goes on
+        sawHeld(item, r);
         changed();
       }
     } finally {
@@ -275,6 +354,8 @@ export function createSaveQueue({
     /** Queue one card write (an ArrayBuffer or bytes): its seq. Stashed first, then sent, in order. */
     write(bytes) {
       const item = { seq: next++, b64: toB64(bytes), stashed: null, kept: false, tries: { nonce: 0 } };
+      // A NEW HORSE not created yet: the name the seam reads from this card (none: '').
+      if (!created && typeof cardName === 'function') { try { item.name = cleanName(cardName(new Uint8Array(bytes))); } catch { item.name = ''; } }
       loose.add(item);
       item.stashed = keep(item);
       if (stopped) { heldItems.push(item); stats.held++; changed(); return item.seq; }
@@ -296,6 +377,8 @@ export function createSaveQueue({
     state,
     stats: () => ({ ...stats }),
     unstashed: () => loose.size,
+    /** The held writes refused as another horse's card (code 'other_horse'): never this lease's horse's to save. */
+    heldOther: () => heldItems.filter((x) => x.other === true).length,
     /** Stop for good (why: 'ended' when the lease has ended, the default 'stopped'). */
     stop: (why = 'stopped') => stop(why),
   };

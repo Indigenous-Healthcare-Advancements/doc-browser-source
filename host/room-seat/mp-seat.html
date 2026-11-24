@@ -12,7 +12,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>DOC seat</title>
 <style>
   body { margin: 0; background: #111; color: #ddd; font: 13px system-ui, sans-serif; }
@@ -31,10 +31,26 @@
   #status { white-space: pre; font-family: ui-monospace, monospace; font-size: 12px; padding: 6px 12px; }
   #notice { margin: 4px 12px 0; padding: 8px 12px; background: #4a3a10; color: #ffe7a8; border: 1px solid #8a6a20; border-radius: 6px; font-size: 14px; }
   #notice[hidden] { display: none; }
+  /* The seat's own sound (src/room-seat-audio.js): on by default, with a mute and a level; and the same pair for the
+     room's main cabinet sound (Main), shown once that sound arrives with the main screen. */
+  #sound.attn, #main-sound.attn { background: #d8a630; color: #1a1408; border-color: #d8a630; font-weight: 600; }
+  #sound-level, #main-level { width: 90px; accent-color: #d8a630; vertical-align: middle; }
+  #sound[hidden], #sound-level[hidden], #main-sound[hidden], #main-level[hidden] { display: none; }
+  /* Each sound button stays on one row with its own level, however the header wraps; a pair with nothing shown takes no room. */
+  .lvl { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .lvl:not(:has(> :not([hidden]))) { display: none; }
+  /* The sound prompt (mp-seat.js startSeatAudio): large, over the top of the stage (the main screen when there is one),
+     whenever the browser is holding the sound until the player touches the page; gone once sound runs. Dark text on
+     gold: 8.2 to 1. */
+  #sound-ask { position: absolute; z-index: 6; left: 50%; top: 10px; transform: translateX(-50%); box-sizing: border-box; min-width: 200px; min-height: 56px; padding: 12px 22px;
+    font: 700 18px system-ui, sans-serif; color: #1a1408; background: #d8a630; border: 2px solid #fff3c4; border-radius: 28px; box-shadow: 0 6px 22px rgba(0, 0, 0, .6); cursor: pointer;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  #sound-ask[hidden] { display: none; }
+  #sound-ask:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
   /* The waiting card (mp-seat.js seat wait): over the player's own screen until the game is on it. */
   #stage { position: relative; }
   #wait { position: absolute; z-index: 4; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 16px; box-sizing: border-box;
-    background: rgba(8, 12, 10, .92); color: #f2f0e8; text-align: center; pointer-events: none; }
+    background: rgba(8, 12, 10, .92); color: #f2f0e8; text-align: center; pointer-events: none; overflow: hidden; }
   #wait[hidden] { display: none; }
   #wait-title { font-size: clamp(16px, 2.4vw, 22px); font-weight: 600; }
   #wait-text { font-size: clamp(13px, 1.8vw, 16px); max-width: 34em; color: #d6d2c4; }
@@ -51,6 +67,47 @@
   .seat-dlg p { margin: 0 0 12px; font-size: 14px; }
   .seat-dlg button, .cm-modal button { font: inherit; color: #eee; background: #333; border: 1px solid #555; border-radius: 5px; padding: 5px 10px; cursor: pointer; }
   .seat-dlg button.go { background: #7a2a1f; border-color: #a33; }
+  /* The horse chooser (src/room-seat-chooser.js, "Which horse next?"). The title, the status line, Keep and Leave seat
+     are always in view; the list of horses scrolls between them when it is longer than the panel. Its colours are that file's
+     CHOOSER_COLORS (the test computes each pair's contrast); a choice that is off has its own colours, never a fade. */
+  #horse-ask > div { display: flex; flex-direction: column; gap: 8px; box-sizing: border-box; width: min(92vw, 440px); overflow: hidden; color: #eeeeee; background: #1d1d1d; }
+  #horse-ask h2 { margin: 0; font-size: 18px; }
+  #horse-ask p { margin: 0; font-size: 14px; line-height: 1.35; }
+  #horse-ask p[hidden] { display: none; }
+  #horse-list { display: flex; flex-direction: column; gap: 6px; flex: 1 1 auto; min-height: 44px; overflow-y: auto; overscroll-behavior: contain; padding: 3px; }
+  #horse-ask .hc-row { display: flex; flex: 0 0 auto; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; box-sizing: border-box; width: 100%; min-height: 44px; padding: 6px 12px;
+    text-align: left; font-size: 15px; color: #ffffff; background: #333333; border: 1px solid #555555; border-radius: 6px; }
+  #horse-ask .hc-row.cur { border-color: #d8a630; }
+  #horse-ask .hc-note { font-size: 13px; color: #c8c8c8; }
+  #horse-ask .hc-row:disabled { color: #c8c8c8; background: #262626; cursor: default; }
+  #horse-foot { color: #c8c8c8; }
+  #horse-status { padding: 8px 10px; color: #ffe7a8; background: #4a3a10; border: 1px solid #8a6a20; border-radius: 6px; }
+  /* Keep and Leave seat: one under the other; side by side on a phone held sideways (the shortest screens). */
+  #horse-acts { display: flex; flex: 0 0 auto; flex-direction: column; gap: 8px; }
+  #horse-keep { flex: 0 0 auto; min-height: 44px; font-weight: 600; color: #1a1408; background: #d8a630; border-color: #d8a630; }
+  #horse-keep:disabled { color: #c8c8c8; background: #262626; border-color: #555555; cursor: default; }
+  #horse-leave { flex: 0 0 auto; min-height: 44px; color: #ffffff; background: #7a2a1f; border-color: #aa3333; }
+  #horse-leave:disabled { color: #c8c8c8; background: #262626; border-color: #555555; cursor: default; }
+  #horse-leave[hidden] { display: none; }
+  /* Report a problem (src/room-seat-report.js, docs/problem-reports.md): a small panel with one optional line of
+     text. Every pair of colours here is one the page already uses (the chooser's table: 7.6 to 1 at the least). */
+  #report-ask > div { display: flex; flex-direction: column; gap: 10px; box-sizing: border-box; width: min(92vw, 440px); color: #eeeeee; background: #1d1d1d; }
+  /* The report sheet is no veil (the seat test of 2026-11-24: a player must still whip and hold while it is open):
+     it sits at the top of the page, and a touch or a click beside it goes to the game's own buttons under it. */
+  #report-ask { background: none; pointer-events: none; align-items: flex-start; box-sizing: border-box; padding-top: 12px; }
+  #report-ask > div { pointer-events: auto; box-shadow: 0 8px 26px rgba(0, 0, 0, .6); }
+  #report-ask h2 { margin: 0; font-size: 18px; }
+  #report-ask p { margin: 0; font-size: 14px; line-height: 1.35; }
+  #report-ask p[hidden] { display: none; }
+  #report-lead { color: #c8c8c8; }
+  #report-note-label { font-size: 14px; }
+  #report-note { box-sizing: border-box; width: 100%; min-height: 36px; padding: 6px 10px; font: inherit; font-size: 15px; color: #ffffff; background: #262626; border: 1px solid #555555; border-radius: 6px; }
+  #report-status { padding: 8px 10px; color: #ffe7a8; background: #4a3a10; border: 1px solid #8a6a20; border-radius: 6px; }
+  #report-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  #report-send { min-height: 36px; font-weight: 600; color: #1a1408; background: #d8a630; border-color: #d8a630; }
+  #report-send:disabled { color: #c8c8c8; background: #262626; border-color: #555555; cursor: default; }
+  #report-send[hidden] { display: none; }
+  #report[hidden] { display: none; }
   .cm-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .cm-head h2 { font-size: 16px; margin: 0; }
   .cm-tabs { display: flex; gap: 6px; margin: 10px 0; }
@@ -162,25 +219,153 @@
     .padsize input[type="range"] { flex: 1 1 60px; min-width: 60px; }
     .docbtn .dm-txt { font-size: 13px; }
   }
+  /* Keyboard users see where they are (a mouse or a finger does not draw this). */
+  button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+  /* The safe area, for the page to read (room-seat-phone.js readInsets): the notch, the corners, the home bar. */
+  #safe-probe { position: fixed; left: 0; top: 0; width: 0; height: 0; visibility: hidden; pointer-events: none;
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
+  #menu-btn, #bar-msg, #bar-leave, #menu-close, #menu-hint { display: none; }
+
+  /* ---- THE TOUCH LAYOUT (docs/seat-phone-layout.md): the room seat on a phone or a tablet. mp-seat.js sets
+     body.touch (and html.touch) with land or port, and writes the rectangles room-seat-layout.js worked out as
+     variables on #stage (px, viewport coordinates, all inside the safe area). A desktop never gets the class, so
+     nothing above changes there. The page is exactly the dynamic viewport and never scrolls; the browser's own
+     gestures are kept off the play area only (touch-action here, room-seat-phone.js guardPlayArea for the rest). */
+  html.touch, body.touch { height: 100vh; height: 100dvh; overflow: hidden; overscroll-behavior: none; }
+  body.touch { position: fixed; left: 0; top: 0; width: 100%; font-size: 16px; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  body.touch #stage { position: fixed; left: 0; top: 0; width: 100%; height: 100vh; height: 100dvh; margin: 0; display: block;
+    touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  body.touch #main { position: absolute; left: var(--main-x); top: var(--main-y); width: var(--main-w); height: var(--main-h); aspect-ratio: auto; }
+  body.touch #stage canvas { position: absolute; left: var(--screen-x); top: var(--screen-y); width: var(--screen-w); height: var(--screen-h); min-width: 0; margin: 0; aspect-ratio: auto; }
+  body.touch #status { display: none; }
+  body.touch #notice { position: fixed; z-index: 9; left: max(8px, env(safe-area-inset-left, 0px)); right: max(8px, env(safe-area-inset-right, 0px)); top: calc(env(safe-area-inset-top, 0px) + 56px); margin: 0; font-size: 16px; }
+  /* The bar: Menu, the status line, Leave. Upright they are a row across the top; sideways only Menu stays, in the
+     top left corner, and the status line is a strip over the first picture while the player is not racing. */
+  body.touch #menu-btn, body.touch #bar-leave { display: flex; position: absolute; z-index: 7; box-sizing: border-box; align-items: center; justify-content: center; padding: 0;
+    font: 600 16px system-ui, sans-serif; color: #ffffff; background: #333333; border: 1px solid #555555; border-radius: 8px; touch-action: manipulation; -webkit-tap-highlight-color: transparent; cursor: pointer; }
+  body.touch #menu-btn { left: var(--menu-x); top: var(--menu-y); width: var(--menu-w); height: var(--menu-h); }
+  body.touch #menu-btn i { display: block; width: 22px; height: 2px; background: #ffffff; box-shadow: 0 7px 0 #ffffff, 0 -7px 0 #ffffff; }
+  body.touch #bar-leave { left: var(--leave-x); top: var(--leave-y); width: var(--leave-w); height: var(--leave-h); }
+  body.touch.land #bar-leave { display: none; }
+  body.touch #bar-msg { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; position: absolute; z-index: 3; box-sizing: border-box;
+    left: var(--msg-x); top: var(--msg-y); width: var(--msg-w); max-height: var(--msg-h); padding: 4px 2px 0; overflow: hidden; font-size: 16px; line-height: 20px; color: #f2f0e8;
+    touch-action: manipulation; -webkit-user-select: text; user-select: text; }
+  /* Sideways the status line is a strip of its own beside the main screen (room-seat-layout.js msg: whole lines of
+     20 px), over neither picture and over no button, so it stays while the player races. */
+  body.touch.land #bar-msg { display: block; z-index: 3; height: auto; max-height: var(--msg-h); padding: 4px 8px; line-height: 20px; white-space: normal; overflow-wrap: anywhere; text-align: left; background: rgba(0, 0, 0, 0.8); border-radius: 6px; pointer-events: none; }
+  body.touch.land #bar-msg:empty { display: none; }
+  /* Sideways a tap on the main screen swaps which picture is the large one (mp-seat.js; room-seat-layout.js large). */
+  body.touch.land #main { cursor: pointer; touch-action: manipulation; }
+  /* The waiting card: over the player's own screen upright; sideways over the whole band under the main screen, the
+     buttons included (they do nothing while the player waits). It takes the touches that land on it. */
+  body.touch #wait { z-index: 6; pointer-events: auto; left: var(--wait-x); top: var(--wait-y); width: var(--wait-w); height: var(--wait-h); padding: 10px 14px; gap: 8px; overflow: hidden; }
+  body.touch #wait-title { font-size: 18px; color: #f2f0e8; }
+  body.touch #wait-text { font-size: 16px; line-height: 1.3; color: #d6d2c4; }
+  body.touch #wait-time { font-size: 16px; color: #b8b5ac; }
+  body.touch #sound-ask { z-index: 8; left: var(--ask-x); top: var(--ask-y); width: var(--ask-w); min-width: 0; min-height: var(--ask-h); transform: none; }
+  /* The menu: the header's own controls, as a sheet over the page, opened by Menu. Every control is at least 48 px
+     high with 16 px text; the sliders are as wide as the sheet. The browser's own zoom and scroll work here. */
+  body.touch header { display: none; }
+  body.touch.menu-open header { display: flex; position: fixed; z-index: 20; left: 0; top: 0; width: 100%; height: 100vh; height: 100dvh; box-sizing: border-box;
+    flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 10px; overflow: auto; overscroll-behavior: contain; touch-action: pan-y pinch-zoom;
+    padding: max(12px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+    background: #1d1d1d; color: #eeeeee; font-size: 16px; }
+  body.touch.land.menu-open header { display: grid; grid-template-columns: 1fr 1fr; align-content: start; align-items: center; }
+  body.touch header > * { flex: 0 0 auto; }
+  body.touch header button { box-sizing: border-box; min-height: 48px; padding: 0 14px; font: 600 16px system-ui, sans-serif; text-align: left; color: #ffffff; background: #333333; border: 1px solid #555555; border-radius: 8px; touch-action: manipulation; }
+  body.touch header button:disabled { opacity: 0.5; }
+  body.touch header button[hidden], body.touch header input[hidden] { display: none; }
+  body.touch header #sound.attn, body.touch header #main-sound.attn, body.touch #menu-close { color: #1a1408; background: #d8a630; border-color: #d8a630; }
+  body.touch header input[type="range"], body.touch header #sound-level, body.touch header #main-level { box-sizing: border-box; width: 100%; height: 48px; margin: 0; touch-action: pan-y; }
+  body.touch header label { display: flex; flex-direction: column; gap: 6px; }
+  /* A sound button and its level share one row of the sheet: the button at its own width, the level the rest. */
+  body.touch header .lvl { display: flex; align-items: center; gap: 10px; white-space: normal; min-width: 0; }
+  body.touch header .lvl:not(:has(> :not([hidden]))) { display: none; }
+  body.touch header .lvl > button { flex: 0 0 auto; min-width: 7.5em; }
+  body.touch header .lvl > input[type="range"] { flex: 1 1 0; width: auto; min-width: 0; }
+  body.touch header input[type="file"] { min-height: 48px; font-size: 16px; color: #eeeeee; }
+  body.touch #menu-close { display: block; order: -2; text-align: center; }
+  body.touch #msg { order: -1; padding: 4px 0; font-size: 16px; line-height: 1.3; }
+  body.touch.land #menu-close, body.touch.land #msg, body.touch.land #menu-hint { grid-column: 1 / -1; }
+  body.touch #menu-hint { display: block; padding: 4px 0; font-size: 16px; line-height: 1.3; color: #c8c8c8; }
+  /* The page's own panels, at a size a finger and an eye can use. */
+  body.touch .seat-dlg p { font-size: 16px; }
+  body.touch .seat-dlg button, body.touch .cm-modal button { min-height: 48px; padding: 0 16px; font-size: 16px; touch-action: manipulation; }
+  /* The horse chooser on a phone: inside the safe area and the dynamic viewport, every choice 48 px or more with
+     16 px text, the list scrolling under a finger (the browser's own scroll and zoom work here). */
+  body.touch #horse-ask { padding: max(8px, env(safe-area-inset-top, 0px)) max(8px, env(safe-area-inset-right, 0px)) max(8px, env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px)); box-sizing: border-box; height: 100vh; height: 100dvh; }
+  body.touch #horse-ask > div { width: min(100%, 480px); max-width: none; max-height: 100%; padding: 12px; touch-action: pan-y pinch-zoom; }
+  body.touch #horse-list { min-height: 56px; touch-action: pan-y pinch-zoom; }
+  body.touch #horse-ask .hc-row { min-height: 48px; padding: 6px 14px; font-size: 16px; }
+  body.touch #horse-ask .hc-note, body.touch #horse-ask p { font-size: 16px; }
+  body.touch #horse-keep { min-height: 48px; }
+  body.touch #horse-leave { min-height: 48px; }
+  body.touch.land #horse-acts { flex-direction: row; }
+  body.touch.land #horse-acts > button { flex: 1 1 0; min-width: 0; }
+  /* Report a problem on a phone: inside the safe area, every control 48 px or more with 16 px text (16 px in the
+     text field also keeps iPhone Safari from zooming the page when it is touched). The field is never focused by
+     the page: the keyboard comes up only if the player touches it, and Send works without it. */
+  body.touch #report-ask { padding: max(8px, env(safe-area-inset-top, 0px)) max(8px, env(safe-area-inset-right, 0px)) max(8px, env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px)); box-sizing: border-box; height: 100vh; height: 100dvh; align-items: flex-start; }
+  body.touch #report-ask > div { width: min(100%, 480px); max-width: none; max-height: 100%; padding: 12px; touch-action: pan-y pinch-zoom; }
+  body.touch #report-ask p, body.touch #report-note-label { font-size: 16px; }
+  body.touch #report-note { min-height: 48px; font-size: 16px; }
+  body.touch #report-send, body.touch #report-cancel { min-height: 48px; flex: 1 1 120px; }
+  body.touch .cm-hint, body.touch .cm-overlay small, body.touch .cm-act span { color: #c8c8c8; }
+  body.touch .padarrange { font-size: 16px; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+  body.touch .padarrange small { color: #c8c8c8; font-size: 16px; }
+  body.touch .padarrange-row button, body.touch .padarrange .padstyle-opt, body.touch .padarrange .padsize-all { min-height: 48px; padding: 0 14px; font-size: 16px; }
+  body.touch .padarrange .padsize-step { width: 48px; height: 48px; }
+  body.touch .padsize-lbl, body.touch .padsize-val { font-size: 16px; color: #c8c8c8; }
+  body.touch .padsize input[type="range"] { height: 48px; }
 </style>
 </head>
 <body>
-<header>
+<header id="seat-menu">
+  <button id="menu-close" type="button">Close menu</button>
   <label>Game and BIOS: <input id="rom-input" type="file" multiple accept=".zip"></label>
   <button id="leave" disabled>Leave seat</button>
+  <button id="change-horse" hidden title="Change to another of your horses without leaving the seat">Change horse</button>
   <button id="controls" hidden title="Customize your keys and controller">Controls</button>
   <button id="pad" hidden aria-pressed="false" title="Show or hide the on-screen buttons">Show buttons</button>
   <button id="pad-arrange" hidden title="Move, size and fade the on-screen buttons">Arrange buttons</button>
   <button id="fullscreen" hidden title="Full screen (F)">Full screen</button>
+  <span class="lvl">
+  <button id="sound" hidden aria-pressed="true" title="Sound is on: press to mute">Sound: on</button>
+  <input id="sound-level" hidden type="range" min="0" max="100" step="1" value="100" aria-label="Seat sound volume" title="Seat sound volume">
+  </span>
+  <span class="lvl">
+  <button id="main-sound" hidden aria-pressed="true" title="The main screen sound is on: press to mute">Main: on</button>
+  <input id="main-level" hidden type="range" min="0" max="100" step="1" value="80" aria-label="Main screen sound volume" title="Main screen sound volume">
+  </span>
+  <button id="haptic" hidden aria-pressed="true" title="A short buzz each time Whip or Hold is pressed">Buzz on Whip and Hold: on</button>
+  <button id="report" hidden title="Send a snapshot of this seat to the staff">Report a problem</button>
   <button id="forget" hidden>Forget cached game files</button>
   <span id="msg">Seat page. Lab: opened with #ticket= from a lab room.</span>
+  <span id="menu-hint">Hold the phone upright for the largest pictures, or sideways for the buttons under both thumbs. Sideways, tap the main screen to make it the large picture, and again to put your own screen back.</span>
 </header>
+<div id="safe-probe" aria-hidden="true"></div>
 <div id="notice" hidden role="status"></div>
-<div id="stage"><video id="main" hidden muted autoplay playsinline aria-label="Main screen"></video><canvas id="screen" width="640" height="480"></canvas><div id="wait" hidden role="status" aria-live="polite"><div id="wait-title"></div><div id="wait-steps"><i></i><i></i><i></i><i></i></div><div id="wait-text"></div><div id="wait-time"></div></div></div>
+<div id="stage"><video id="main" hidden muted autoplay playsinline aria-label="Main screen"></video><canvas id="screen" width="640" height="480"></canvas><div id="wait" hidden role="status" aria-live="polite"><div id="wait-title"></div><div id="wait-steps"><i></i><i></i><i></i><i></i></div><div id="wait-text"></div><div id="wait-time"></div></div><button id="menu-btn" type="button" aria-label="Menu" aria-expanded="false" aria-controls="seat-menu"><i></i></button><div id="bar-msg" role="status"></div><button id="bar-leave" type="button">Leave</button><audio id="main-audio" playsinline aria-label="Main screen sound"></audio><button id="sound-ask" type="button" hidden title="Your browser plays sound only after you touch the page: tap here">Tap for sound</button></div>
 <div id="status"></div>
 <div id="leave-confirm" class="seat-dlg" hidden role="dialog" aria-modal="true" aria-labelledby="leave-q"><div>
   <p id="leave-q">Leave this seat? Your card comes out and is saved before you go.</p>
   <button id="leave-yes" class="go">Leave</button> <button id="leave-no">Stay</button>
+</div></div>
+<div id="horse-ask" class="seat-dlg" hidden role="dialog" aria-modal="true" aria-labelledby="horse-q"><div>
+  <h2 id="horse-q">Which horse next?</h2>
+  <p id="horse-lead" hidden></p>
+  <div id="horse-list" role="group" aria-labelledby="horse-q"></div>
+  <p id="horse-foot" hidden></p>
+  <p id="horse-status" role="status" aria-live="polite" hidden></p>
+  <div id="horse-acts"><button id="horse-keep" type="button">Keep this horse</button><button id="horse-leave" type="button">Leave seat</button></div>
+</div></div>
+<div id="report-ask" class="seat-dlg" hidden role="dialog" aria-modal="true" aria-labelledby="report-q"><div>
+  <h2 id="report-q">Report a problem</h2>
+  <p id="report-lead">This sends the staff a picture of your game screen, this seat's connection figures and its recent log.</p>
+  <label id="report-note-label" for="report-note">What went wrong? (optional)</label>
+  <input id="report-note" type="text" maxlength="200" autocomplete="off" autocapitalize="sentences" enterkeyhint="send">
+  <p id="report-status" role="status" aria-live="polite" hidden></p>
+  <div id="report-row"><button id="report-send" type="button">Send</button> <button id="report-cancel" type="button">Cancel</button></div>
 </div></div>
 <script type="module" src="./src/mp-seat.js"></script>
 </body>

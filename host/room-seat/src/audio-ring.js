@@ -8,13 +8,25 @@
 // plain ArrayBuffer (then producer and consumer must share a thread, which
 // is only useful for tests).
 //
-// Layout: Int32 header [readIndex, writeIndex] then Int16 data, capacity
-// frames x 2 channels. Indices count frames and wrap at capacity * 2 so
-// full and empty can be told apart.
+// Layout: Int32 header [readIndex, writeIndex, pushed, nonZero, dropped,
+// batches] then Int16 data, capacity frames x 2 channels. Indices count
+// frames and wrap at capacity * 2 so full and empty can be told apart.
+//
+// The four counters are the producer's, for diagnostics only (counters()):
+// frames written, frames written that were not silence, frames that did not
+// fit, and push calls. They live in the shared header so the page can read
+// what a board in a worker is making without a message; each wraps at 2^32
+// (about 27 hours of frames at 44100 Hz), so a reader takes differences
+// with (b - a) >>> 0. They cost one compare per frame in a loop that already
+// visits every frame, and never block.
 
-const HEADER_INTS = 2;
+const HEADER_INTS = 6;
 const READ = 0;
 const WRITE = 1;
+const PUSHED = 2;
+const NONZERO = 3;
+const DROPPED = 4;
+const BATCHES = 5;
 
 export function ringByteLength(capacityFrames) {
   return HEADER_INTS * 4 + capacityFrames * 2 * 2;
@@ -45,6 +57,14 @@ export class AudioRing {
 
   load(i) { return this.shared ? Atomics.load(this.header, i) : this.header[i]; }
   store(i, v) { if (this.shared) Atomics.store(this.header, i, v); else this.header[i] = v; }
+  // Producer only (one writer): a counter moves on by n, wrapping.
+  count(i, n) { if (n) this.store(i, (this.load(i) + n) | 0); }
+
+  // What the producer has done since the ring was made, whichever thread
+  // asks: { pushed, nonZero, dropped, batches } (see the layout note).
+  counters() {
+    return { pushed: this.load(PUSHED) >>> 0, nonZero: this.load(NONZERO) >>> 0, dropped: this.load(DROPPED) >>> 0, batches: this.load(BATCHES) >>> 0 };
+  }
 
   available() {
     const w = this.load(WRITE);
@@ -60,14 +80,22 @@ export class AudioRing {
   push(samples, frames = samples.length >> 1) {
     const n = Math.min(frames, this.free());
     let w = this.load(WRITE);
+    let nz = 0;
     for (let f = 0; f < n; f++) {
       const slot = (w % this.capacity) * 2;
-      this.data[slot] = samples[f * 2];
-      this.data[slot + 1] = samples[f * 2 + 1];
+      const l = samples[f * 2];
+      const r = samples[f * 2 + 1];
+      this.data[slot] = l;
+      this.data[slot + 1] = r;
+      if (l !== 0 || r !== 0) nz++;
       w = (w + 1) % (2 * this.capacity);
     }
     this.store(WRITE, w);
     this.dropped += frames - n;
+    this.count(PUSHED, n);
+    this.count(NONZERO, nz);
+    this.count(DROPPED, frames - n);
+    this.count(BATCHES, 1);
     return n;
   }
 
