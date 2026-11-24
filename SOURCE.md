@@ -29,6 +29,10 @@ written (no build step). The six `lb-*.js` modules are deployed one folder
 down, in `src/lb/`, with their relative imports adjusted to match;
 `host/README.md` gives the mapping. Nothing else is changed.
 
+The room seat page at `/room-seat` is `host/room-seat/mp-seat.html` with the
+modules of `host/room-seat/src/` beside it, and one core, in `src/core/`: the
+five-board core linked with one more export. Section 9 describes that core.
+
 The deployed `flycast_libretro.js` files pass through Git with line-ending
 normalisation, so the 16 CRLF line ends the linker writes into each become
 LF. The `.wasm` files are copied byte for byte.
@@ -276,3 +280,49 @@ built only without `LIBRETRO`.
 Still open: `core/reios/descrambl.cpp` and `core/deps/chdpsr/cdipsr.cpp`
 (unclear provenance, no licence header, not needed for NAOMI) are compiled
 and linked. A later patch can leave them out the same way.
+
+## 9. The room seat core (five-board core with `shim_nvmem_copy`), 2026-11-22
+
+The room seat page and the rooms themselves run the five-board core linked
+with one more exported function, `shim_nvmem_copy`. The game page at `/pilot`
+still serves the five-board core of release `web-2026.11.05-1`, which this
+change does not touch.
+
+What changed, compared with the five-board core of `web-2026.11.05-1`:
+
+- `host/shim/linkbus_shim.cpp`: one new function, `shim_nvmem_copy(out, cap)`.
+  It copies the board's battery backed RAM (NAOMI: 32 KB, through Flycast's own
+  `nvmem::getFlashData()`) into a buffer the host page gives it and returns the
+  byte count. It reads no guest address, charges nothing to the guest clock and
+  writes neither a file nor any emulator state. A room uses it to keep its
+  race calendar and track records across a restart
+  (`host/room-seat/src/room-nvmem.js`); a seat never calls it.
+- `scripts/link-linkbus2.ps1`: `_shim_nvmem_copy` added to the export list.
+
+What did not change: Flycast and its patch series. No patch was added. The
+library is the one the five-board core of `web-2026.11.05-1` was linked from
+(Flycast b3e207a43bcf: `flycast/patches` 0001 to 0023, then
+`flycast/patches-linkbus2` 0001 to 0010); only the link was run again, with
+the toolchain of section 3. The version string inside the wasm is still
+`v2.6-328-gb3e207a43`. The single-board core is untouched
+(`linkbus_shim.cpp` is not linked into it).
+
+To rebuild it, follow section 4 as written: `scripts/link-linkbus2.ps1` of this
+commit links the room seat core. To rebuild the five-board core that `/pilot`
+serves, use `scripts/link-linkbus2.ps1` and `host/shim/linkbus_shim.cpp` as
+they are at tag `web-2026.11.05-1`.
+
+Checks made on the build PC, 2026-11-22:
+
+1. Before anything was changed, the same link with the shims as they were gave
+   the five-board core of `web-2026.11.05-1` byte for byte, so the toolchain
+   and the library were the released ones.
+2. The new core was linked twice and both links gave the same bytes.
+3. The old and the new core ran 3,600 frames on six boards (boot and attract
+   mode only) and gave identical results.
+
+The page pins the core it loads: `host/room-seat/src/core-pin.js` holds the
+SHA-256 digest of `flycast_libretro.js` (as linked, with the 16 CRLF line ends
+the linker writes) and of `flycast_libretro.wasm`, and the page refuses any
+other core. Those two digests are the reference for a rebuild; a wasm built at
+another source path differs in its embedded path strings (5.1).

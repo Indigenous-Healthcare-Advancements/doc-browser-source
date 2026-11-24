@@ -19,8 +19,10 @@
 // the board never starts. Every other board imports ./core/ as before.
 
 import { loadPinnedCore } from './core-pin.js';
+import { checkGameFiles, boardCheckEdition } from './game-check.js';
 import { FS_PATHS, DEFAULT_CORE_OPTIONS, mountRom } from './core-bridge.js';
-import { mountCard, createCardWatcher } from './card-store.js';
+import { mountCard, createCardWatcher, prepareNewCard, swapCoreCard } from './card-store.js';
+import { NVMEM_BYTES, mountMemory, readCoreEeprom, sameBytes, createStableReader } from './room-nvmem.js';
 import { cardEjectSteps, CARD_PRESS_MASK } from './mp-seat-eject.js';
 import { AudioRing } from './audio-ring.js';
 import { syncHeaderOffset } from './race-pair.js';
@@ -45,6 +47,8 @@ const NET_ERR = 0x0C3B7748;
 const WD_COUNT = 0x0C40A1B8;
 
 import { hasEntryWatch, entryWatchFor, ownerWatchFor, gameWatchFor } from './mp-entry-watch.js';
+import { careWordsFor, createCareRecorder } from './care-recorder.js';
+import { hangPeekReply } from './mp-hang-dump.js';
 import { NET_STATUS } from './lb-net-layout.js';
 import { createRamDiffer, checkLabWords, small, field } from './lb-ram-diff.js';
 import { createFrameTimeAgg } from './lb-frame-time.js';
@@ -59,6 +63,8 @@ const hasCabinet = () => !!(cfg && cfg.cabinet);
 let initDone = null;
 let Module = null;
 let buf = 0;
+// The frame loop is running (the room's hang dump reads a board only then: 'hang-peek' below).
+let frameLoopOn = false;
 const logs = [];
 // Card seat (stable game): the card file watcher; its writes go to the page.
 let cardWatch = null;
@@ -73,6 +79,61 @@ let ejectPress = null;
 let insertBase = 0;
 let insertHeld = false;
 let ejecting = false;
+// THE CARD'S GENERATION (the room seat's horse change, 'card-swap' below). A watcher reports every card write through
+// the writer it was made with, and a writer carries ITS generation for good: null for the card the board booted with
+// (the message then has no gen field, exactly as before any change), else the gen the page gave with the swap. So a
+// write the old watcher reports in its last poll goes out under the OLD generation, and every write after a swap
+// carries the new one.
+let cardGen = null;
+const cardWriter = (gen) => (b) => {
+  const copy = new Uint8Array(b);
+  self.postMessage({ type: 'card-write', board: cfg.label, bytes: copy.buffer, ...(gen === null ? {} : { gen }) }, [copy.buffer]);
+};
+// 'card-swap' { bytes | null, gen, adopt? }: change the card in the reader between two frames (card-store.js
+// swapCoreCard has the order: the old watcher's last poll, the file, the new watcher). Refused, with nothing
+// changed, while an eject save is pressing, for a gen that is not a whole number above the current one, or for a
+// card of the wrong size. The answer comes after any card-write the last poll caused, so the page sees them in order.
+function cardSwap(m) {
+  const gen = m.gen;
+  if (!Number.isSafeInteger(gen) || gen < 1 || (cardGen !== null && gen <= cardGen)) return { ok: false, gen: gen ?? null, why: 'bad gen' };
+  if (ejecting) return { ok: false, gen, why: 'busy' };
+  if (!Module || !cfg) return { ok: false, gen, why: 'not started' };
+  const bytes = m.bytes ? new Uint8Array(m.bytes) : null;
+  let r;
+  try { r = swapCoreCard(Module.FS, FS_PATHS.save, cfg.game, cardWatch, bytes, cardWriter(gen), { adopt: m.adopt === true && !bytes }); } catch (err) { return { ok: false, gen, why: String(err && err.message ? err.message : err).slice(0, 80) }; }
+  cardWatch = r.watcher;
+  cardGen = gen;
+  insertBase = 0; // the new card's stint starts here
+  post('log', { text: `[board] card changed in the reader (gen ${gen}: ${bytes ? 'a card' : m.adopt === true ? 'the card the game wrote is kept' : 'no card'})` });
+  return { ok: true, gen, lastChanged: r.lastChanged, removed: r.removed, card: !!bytes };
+}
+// THE CARD READER'S OWN EVENTS (msg.readerEvents, the room seat only; nothing is posted without it):
+//   'card-in'   { f, gen? }  the insert button went down on this board (the core loads the card file then, if there is one)
+//   'card-out'  { f, gen?, writes }  THE GAME TOLD THE READER TO EJECT THE CARD: the core says so in its own log
+//               ("Card ejected", flycast core/hw/naomi/card_reader.cpp), on the game's eject at the end of a card's
+//               game. Lab run of 2026-11-22 on Rev C (C:\dev\doc-lab\m3-playout-1121\eject-probe): the game writes
+//               the card, its STATE goes to 0 about 16 s later, and the eject follows within about a second. Posted
+//               after the frame the core logged it in, and after one more look at the card file, so a write the game
+//               made just before its eject reaches the page first.
+// The log line is the core's (the room seat's core is pinned by digest, so it cannot change under the page); a core
+// that words it differently simply posts no 'card-out', and the page then offers no automatic chooser.
+const CARD_EJECT_LOG = /card_reader\.cpp[^\n]*Card ejected/;
+let cardOutSeen = false;
+let cardInHeld = false;
+// The room's battery memory (room-nvmem.js; the room's board0 only). memoryGiven: the saved memory this board was
+// started with (msg.memory), kept until the load has been checked against it. memoryReader: the between-frames
+// reader (msg.memorySave), fed by the page's 'nvmem-read'. nvBuf: the 32 KB copy buffer in the core's heap.
+let memoryGiven = null;
+let memoryReader = null;
+let nvBuf = 0;
+// The battery RAM as the core holds it now (a copy), or null when the core gives none (an older core without the
+// export, or no game loaded). No guest read and nothing charged to the guest clock (linkbus_shim.cpp).
+function copyNvmem() {
+  if (typeof Module._shim_nvmem_copy !== 'function') return null;
+  if (!nvBuf) nvBuf = Module._malloc(NVMEM_BYTES);
+  const n = Module._shim_nvmem_copy(nvBuf, NVMEM_BYTES) >>> 0;
+  return n === NVMEM_BYTES ? Module.HEAPU8.slice(nvBuf, nvBuf + NVMEM_BYTES) : null;
+}
 // Race screen board (msg.present): { canvas, sync } and whether the last
 // retro_run drew a new frame (the core's video refresh with a valid frame).
 let present = null;
@@ -215,6 +276,17 @@ function labInstantiate(mod, fail) {
 
 async function init(msg) {
   cfg = msg;
+  // KNOWN-GOOD GAME FILES (game-check.js): a room seat's board (corePin), and a lab seat's that asks (gamePin),
+  // checks the very bytes it is about to hand the core (msg.files, the copies this worker owns) against the pin
+  // table, member by member, before the core is even loaded. So a file swapped between the page's own check and
+  // this load is caught. A refusal posts 'game-refused' (which file, why; never a digest) and the board never
+  // starts. The host's own boards and the lab cabinet carry neither flag: nothing is checked, as before.
+  const checkEdition = boardCheckEdition(msg);
+  if (checkEdition !== null) {
+    let g;
+    try { g = await checkGameFiles({ edition: checkEdition, files: msg.files, built: true, subtle: crypto.subtle }); } catch { g = { ok: false, which: 'game', why: 'unreadable', member: null, name: null }; }
+    if (!g.ok) { post('game-refused', { which: g.which, why: g.why, name: g.name }); return false; }
+  }
   // Race screen boards (msg.present, race-pair.js): the core draws into an
   // OffscreenCanvas of this worker, and every rendered frame goes to the page
   // as an ImageBitmap, which shows the two halves together. Other boards draw
@@ -232,7 +304,7 @@ async function init(msg) {
     canvas,
     print: (t) => { logs.push(t); if (cfg.verbose) post('log', { text: t }); },
     printErr: (t) => { logs.push(t); if (cfg.verbose) post('log', { text: t }); },
-    onCoreLog: (level, t) => { logs.push(t); if (cfg.verbose || level >= 3) post('log', { text: t }); },
+    onCoreLog: (level, t) => { logs.push(t); if (cfg.verbose || level >= 3) post('log', { text: t }); if (cfg.readerEvents && CARD_EJECT_LOG.test(String(t))) cardOutSeen = true; },
     onRetroFrame: (valid) => { if (valid) rendered = true; },
   };
   if (msg.corePin) {
@@ -341,10 +413,27 @@ async function init(msg) {
     // game) goes to the page in game order, as a copy in memory. The page
     // hands it to the CardSource; nothing here stores it.
     if (msg.watchCard) {
-      cardWatch = createCardWatcher(Module.FS, p, bytes, (b) => {
-        const copy = new Uint8Array(b);
-        self.postMessage({ type: 'card-write', board: cfg.label, bytes: copy.buffer }, [copy.buffer]);
-      });
+      cardWatch = createCardWatcher(Module.FS, p, bytes, cardWriter(null));
+    }
+  } else if (msg.watchCard && msg.newCard === true) {
+    // A NEW HORSE (the room seat, mp-seat.js): no card in the reader (no card file; card-store.js prepareNewCard).
+    // The game's own new horse flow takes a new card from the reader and writes the horse onto it; that first
+    // write, and every later one, goes to the page as any card write does.
+    const p = prepareNewCard(Module.FS, FS_PATHS.save, msg.game);
+    post('log', { text: `[board] no card in the reader (a new horse); watching ${p}` });
+    cardWatch = createCardWatcher(Module.FS, p, null, cardWriter(null));
+  }
+  // The room's saved battery memory (msg.memory: { nvmem, eeprom }, the room's board0 only): written where the
+  // core reads it when the game loads (room-nvmem.js mountMemory), as a card is. A fault here never stops the
+  // board: it then boots from the game's own fresh memory, and the page is told.
+  if (msg.memory && msg.memory.nvmem) {
+    try {
+      const given = { nvmem: new Uint8Array(msg.memory.nvmem), eeprom: msg.memory.eeprom ? new Uint8Array(msg.memory.eeprom) : null };
+      mountMemory(Module.FS, FS_PATHS.save, msg.game, given);
+      memoryGiven = given;
+    } catch (err) {
+      post('nvmem-restored', { ok: false, why: 'mount' });
+      post('log', { text: `[board] saved memory not written; the game boots from fresh memory: ${err && err.message ? err.message : err}` });
     }
   }
   Module._shim_lb_configure(msg.boardId, 1, msg.actAsServer ? 1 : 0, msg.multiboardSlaves);
@@ -370,6 +459,20 @@ async function runBoard() {
   const loaded = Module.ccall('shim_load_game', 'number', ['string', 'string'], [`${FS_PATHS.roms}/${msg.game}`, '#screen']);
   if (loaded !== 1) { post('error', { message: `shim_load_game returned ${loaded}`, logs: logs.slice(-40) }); return; }
   post('loaded', { status: linkStatus() });
+  // The saved memory, checked: the core read its battery RAM when the game loaded, so a copy taken now (before the
+  // first frame) must be the bytes that were written. Not equal: the core read another file name, or none.
+  if (memoryGiven) {
+    const now = copyNvmem();
+    const ok = !!now && sameBytes(now, memoryGiven.nvmem);
+    post('nvmem-restored', { ok, why: ok ? null : now ? 'differs' : 'no copy', eeprom: !!memoryGiven.eeprom });
+    memoryGiven = null;
+  }
+  // The room's memory saves (msg.memorySave: { raceWord }, the room's board0 only): the page asks ('nvmem-read')
+  // and the read is taken between frames, kept only when two reads a few frames apart agree (room-nvmem.js).
+  if (msg.memorySave) {
+    memoryReader = createStableReader({ read: () => { const nvmem = copyNvmem(); return nvmem ? { nvmem, eeprom: readCoreEeprom(Module.FS, FS_PATHS.save, msg.game) } : null; } });
+  }
+  const memoryRaceWord = msg.memorySave && Number.isInteger(msg.memorySave.raceWord) ? msg.memorySave.raceWord : null;
   const ctl = new Int32Array(msg.ctl);
   const frameCounts = new Int32Array(msg.frameCounts);
   const sleeper = new Int32Array(new SharedArrayBuffer(4));
@@ -417,6 +520,15 @@ async function runBoard() {
   // edges: [word, bit mask] pairs; each frame in which the masked bits go from clear to set is counted.
   const telEdges = tel && Array.isArray(tel.edges) ? tel.edges : [];
   const ed = telEdges.map(() => ({ on: false, n: 0 }));
+  // THE CARE RECORDER (msg.careWatch, a player's seat; care-recorder.js): what the player chose in the care scenes.
+  // Its words are read once a frame, after the frame, exactly as the watched words above: shim_dbg_ram_word copies
+  // one word out of the core's RAM array (host/shim/debug_state_shim.cpp: a memcpy, no guest read, nothing charged
+  // to the guest clock), so reading them changes nothing in the game. Never the core's wasm_mem_read exports: those
+  // go through the guest's memory handlers and add a read penalty to the guest clock. Rev C only (no words for
+  // another game: nothing is read). Only events go to the page ('care'), with the recorder's counters.
+  const careWords = msg.careWatch ? careWordsFor(msg.game) : [];
+  const care = careWords.length ? createCareRecorder() : null;
+  const careVals = care ? new Array(careWords.length).fill(0) : null;
   let wdMax = 0;
   let changes = [];
   let flushWatch = false;
@@ -431,6 +543,7 @@ async function runBoard() {
   const flushFt = () => { const r = ft ? ft.flush() : null; if (r) post('watch', { changes: [], ft: r }); };
   let w0 = 0;
   let vbBefore = null;
+  frameLoopOn = true;
   for (let f = 0; ; f++) {
     if (Atomics.load(ctl, 0)) break;
     let dueAbs = 0;
@@ -457,6 +570,9 @@ async function runBoard() {
     if (ejectPress && ejectPress.left > 0) { mask |= ejectPress.mask; ejectPress.left--; }
     Module._shim_set_input(0, mask);
     if (vbI32) Atomics.store(vbI32, MB_INPUT_MASK_WORD, mask);
+    // The room seat hears the insert button's rising edge (insertNow: read before the eject save's own press is added).
+    if (insertNow && !cardInHeld && msg.readerEvents) post('card-in', { f, ...(cardGen === null ? {} : { gen: cardGen }) });
+    cardInHeld = insertNow;
     for (let p = 1; p < 4; p++) Module._shim_set_input(p, live ? takeInputMask(live, p) : 0);
     // The feel trace's vblank at the frame start (-1 with no mailbox).
     const vbStart = vbI32 ? Atomics.load(vbI32, 8) : -1;
@@ -486,6 +602,15 @@ async function runBoard() {
     if (trace) traceWrite(trace, [f + 1, startAbs, absNowMs(), firstPostAt, mask, vbStart, dueAbs, latch ? latch.leadMs : -1, barrierAt]);
     if (present) postFrame(f + 1);
     if (cardWatch && (f + 1) % 30 === 0) cardWatch.poll();
+    // The game ejected the card in this frame (the core's log): the card file's last look, then the page is told.
+    if (cardOutSeen) { cardOutSeen = false; if (cardWatch) cardWatch.poll(); post('card-out', { f: f + 1, writes: cardWatch ? cardWatch.changes() : 0, ...(cardGen === null ? {} : { gen: cardGen }) }); }
+    if (memoryReader && memoryReader.pending) {
+      const r = memoryReader.step(f + 1);
+      if (r && r.ok) {
+        const gameRace = memoryRaceWord === null ? null : Module._shim_dbg_ram_word(memoryRaceWord & 0x1ffffff) | 0;
+        self.postMessage({ type: 'nvmem', board: cfg.label, ok: true, tag: r.tag, f: r.frame, tries: r.tries, gameRace, nvmem: r.nvmem.buffer, eeprom: r.eeprom ? r.eeprom.buffer : null }, r.eeprom ? [r.nvmem.buffer, r.eeprom.buffer] : [r.nvmem.buffer]);
+      } else if (r) post('nvmem', { ok: false, tag: r.tag, f: r.frame, why: r.why });
+    }
     Atomics.store(frameCounts, msg.index, f + 1);
     Atomics.notify(frameCounts, msg.index);
     const n = f + 1;
@@ -509,6 +634,11 @@ async function runBoard() {
       }
     }
     if (differ && !differ.done()) for (const r of differ.onFrame(n)) post('ramdiff', r);
+    if (care) {
+      for (let k = 0; k < careWords.length; k++) careVals[k] = Module._shim_dbg_ram_word(careWords[k][1] & 0x1ffffff) >>> 0;
+      const events = care.frame(n, careVals);
+      if (events.length) post('care', { events, stats: care.stats() });
+    }
     if (tel) {
       for (let i = 0; i < telMotion.length; i++) {
         const m = mo[i];
@@ -561,6 +691,7 @@ async function runBoard() {
     }
     if (n % yieldEvery === 0) await yieldTask(); // lets the OffscreenCanvas commit
   }
+  frameLoopOn = false;
   flushFt();
   post('stopped', { status: linkStatus() });
 }
@@ -602,11 +733,22 @@ self.onmessage = async (e) => {
       // (after any card-write it caused, so the page sees them in order).
       const changed = cardWatch ? cardWatch.poll() : false;
       post('card-final', { changed, writes: cardWatch ? cardWatch.changes() : 0 });
+    } else if (m.type === 'card-swap') {
+      post('card-swap', cardSwap(m));
     } else if (m.type === 'card-base') {
       if (cardWatch) { cardWatch.poll(); insertBase = cardWatch.changes(); }
       post('card-base', { base: insertBase });
     } else if (m.type === 'card-eject') {
       post('card-eject', await cardEject(m));
+    } else if (m.type === 'nvmem-read') {
+      // The room page asks for the battery memory (room-nvmem.js): taken by the frame loop, `after` frames on.
+      if (memoryReader) memoryReader.request({ tag: m.tag ?? null, after: Number.isInteger(m.after) && m.after >= 0 && m.after <= 3600 ? m.after : undefined });
+      else post('nvmem', { ok: false, tag: m.tag ?? null, f: null, why: 'off' });
+    } else if (m.type === 'hang-peek') {
+      // The room's hang dump (mp-hang-dump.js): this board's status words (a fixed list there, Rev C only), its
+      // program counter and its state hashes, read between two frames. Read only: shim_dbg_ram_word copies a word out
+      // of the core's RAM array and the hash is the one every sample already takes; nothing is written.
+      post('hang-peek', { id: m.id, ...hangPeekReply({ game: cfg && cfg.game, running: frameLoopOn, word: (a) => Module._shim_dbg_ram_word(a & 0x1ffffff), hash: stateHash }) });
     } else if (m.type === 'shot') {
       post('shot', { status: linkStatus() });
     }

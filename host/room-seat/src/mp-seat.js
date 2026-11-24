@@ -27,6 +27,11 @@
 // the hand-off's signal_url under the public policy (mp-public.js) with its
 // ice_servers, and goes back to return_path when the lease ends. Without
 // that meta it is the LAB seat as before.
+// CHANGE HORSE (2026-11-23, docs/seat-contract.md "Changing horses without leaving the seat"): the room seat can
+// change to another of the member's horses, or a new one, without leaving the seat. One visit then runs several
+// leases in sequence (room-lease-session.js: one lease client, one checkout and one save queue per lease, a card
+// generation per card in the reader); the chooser is room-seat-chooser.js, the order of a change and its crash
+// points room-seat-swap.js, its calls room-seat-net.js. A visit that never changes horses is exactly as before.
 // Copyright (C) 2026 John R Reeves III
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -41,10 +46,11 @@ import { parseNetem, createNetem } from './mp-netem.js';
 import { encodeSeatReport, reportText } from './mp-wire.js';
 import { createSeatLeave, cardEjectRequest, CARD_EJECT_WAIT_MS } from './mp-seat-eject.js';
 import { closingFromReply, ejectAfterRace, closingNoticeText, LEAVE_SETTLE_MS, POST_MS, EJECT_SAVE_MS } from './room-closing.js';
+import { ROOM_RESTART_REASON, ROOM_RESTART_TEXT, markRoomRestartNote } from './room-closing.js';
 import { REVC_GAME } from './mp-entry-watch.js';
 import { createPublicPolicy } from './mp-public.js';
-import { roomSeatIntake, seatMetas, isReload, handoffIceServers, mainViewIceServers, isRoomSlot, seatWaitCard } from './room-seat-handoff.js';
-import { createSeatLease } from './seat-lease.js';
+import { roomSeatIntake, seatMetas, isReload, handoffIceServers, mainViewIceServers, isRoomSlot, seatWaitCard, horseLabel, serverNow, wayBackWords } from './room-seat-handoff.js';
+import { createSeatLease, readCheckout } from './seat-lease.js';
 import { seatEdition, releaseEdition } from './core-pin.js';
 import { editionFiles, linkTags } from './edition-b.js';
 import { editionDef } from './editions.js';
@@ -54,6 +60,16 @@ import { createRoomSeatInput } from './room-seat-input.js';
 import { createControlsPanel } from './room-seat-controls.js';
 import { createMainView, mainWhepUrl, mainViewSupported } from './room-main-view.js';
 import { createRoomSeatPad, padLangFor } from './room-seat-pad.js';
+import { createSeatAudio, soundButtonView, mainButtonView, soundPromptView } from './room-seat-audio.js';
+import { seatLayout, layoutVars, padPreset, touchLayoutWanted } from './room-seat-layout.js';
+import { createWakeLock, createHaptics, guardPlayArea, readInsets, coarsePointer } from './room-seat-phone.js';
+import { createLeaseSessions, leaseView } from './room-lease-session.js';
+import { runHorseSwap, refusalWords, SWAP_TEXT, SWAP_FALLBACK_TEXT, isHandLine, stationLine, isSeatStartLine } from './room-seat-swap.js';
+import { chooserView, createHorseChooser } from './room-seat-chooser.js';
+import { createSeatCalls, giveBackRefusedSeat } from './room-seat-net.js';
+import { checkGameFiles, gameRefusalText, gameCheckWanted } from './game-check.js';
+import { createCareLog, createCareOutbox } from './care-recorder.js';
+import { createSeatLog, createRateMeter, createReportSender, createReportSheet, buildSeatReport, capturePicture, seatStats, seatState, deviceFacts, facts as reportFacts, newReportId, reportCopy } from './room-seat-report.js';
 
 // THE GATE (step 1b). The room seat build runs from the hand-off only; the
 // lab's #ticket=, ?signal= and every other lab param are never read there.
@@ -73,6 +89,10 @@ const stashOpen = roomSeat
   : Promise.resolve(null);
 const intake = roomSeat ? roomSeatIntake({ now: Date.now(), expect: metas.expect, reload: isReload() }) : null;
 const handoff = intake ? intake.handoff : null;
+// A refused entry: the lobby had already reserved the place and opened the lease, so both are given back before the
+// page goes (keepalive, so they outlive the way back; room-seat-net.js giveBackRefusedSeat). An entry this page may
+// not act on was left for the lobby instead, which frees it on arrival (room-seat-handoff.js).
+if (intake && intake.giveBack) giveBackRefusedSeat(intake.giveBack);
 if (intake && intake.go) location.replace(intake.go);
 // Batch 1 step 1: the room seat's live controls (room-seat-input.js). The player's keys and controller go straight
 // into this page's own seat board, with the player's DOC Online mapping (doc_controls_v1, read by that module,
@@ -81,9 +101,27 @@ if (intake && intake.go) location.replace(intake.go);
 let seatInput = null;
 // Option A step 2: the room's main screen view (set where the page builds it; read by the seat's end paths).
 let mainView = null;
+// The page's sound (room-seat-audio.js): made as soon as the page is set up (startSeatAudio, called once below, long
+// before the board starts), so the main cabinet's sound plays while the player waits for the station; the board takes
+// its ring from it when it starts (maybeStart); closed when the seat stops (stopBoard).
+let seatAudio = null;
+// The room's main cabinet sound as it arrives with the main screen (room-main-view.js onAudio), or null: kept here so
+// it reaches the seat's sound whichever of the two is there first.
+let mainSound = null;
+// The phone and tablet layout in force (room-seat-layout.js; set by applyTouchLayout further down), or null: a desktop.
+let touchLayout = null;
+// The screen kept awake while the seat runs (room-seat-phone.js): asked for where the page is set up, let go in stopBoard.
+let wakeLock = null;
+// The place at the room server was given back (leavePlace, further down; here so every end path may read it).
+let placeLeft = false;
+// The station was handed to this seat at least once (seated, and past a warm join's wait): the room then sees the
+// seat itself, and its place is no longer a reservation to give back.
+let stationMine = false;
 // (notePageError is defined further down: a start fault is kept here and noted once the page is set up.)
 let seatInputFault = null;
 if (handoff) { try { seatInput = createRoomSeatInput({ win: window }); } catch (err) { seatInputFault = `controls not started (${String(err && err.message ? err.message : err).slice(0, 60)})`; } }
+// Keys typed in the page's first moments belong to the page before it: the F shortcut waits this long.
+const TYPED_AHEAD_MS = 5000;
 // How long a refusal's own words stay on the page before it goes back.
 const RETURN_NOTICE_MS = 4000;
 // A seat bug (400) before the link is open: how long its report waits for
@@ -102,20 +140,24 @@ const BACK_AFTER_BOARD_MS = 50;
 // 'booting'. The game's own load (shim_load_game) runs after 'ready', so it
 // is not covered here: a load that fails posts 'error', which ends the seat.
 const BOOT_LIMIT_MS = 60000;
+// The way back in words, by the hand-off's return_path (room-seat-handoff.js wayBackWords): "/" is the lobby (its
+// room card seats a member in place), /rooms the rooms page. Every line that names the way back says it this way.
+const BACK = wayBackWords(handoff ? handoff.return_path : intake ? intake.returnPath : null);
+const noGoing = (t) => (t.endsWith(BACK.going) ? t.slice(0, -BACK.going.length).trimEnd() : t);
 // What the page says when the seat ends (the lease's end, or the link's).
 const END_TEXT = {
-  gone: 'Your lease has ended. Going back to the rooms.',
-  wrong_room: 'This seat is not for this room. Going back to the rooms.',
-  token: 'This room was opened again elsewhere. Going back to the rooms.',
-  lost: 'The connection to the rooms was lost for too long. Going back to the rooms.',
+  gone: `Your lease has ended. ${BACK.going}`,
+  wrong_room: `This seat is not for this room. ${BACK.going}`,
+  token: `This room was opened again elsewhere. ${BACK.going}`,
+  lost: `The connection to the rooms was lost for too long. ${BACK.going}`,
   bug: 'This seat hit a problem and has stopped.',
-  dropped: 'The room ended this seat. Going back to the rooms.',
-  linkLost: 'The connection to the room was lost. Going back to the rooms.',
-  left: 'You left the seat. Going back to the rooms.',
+  dropped: `The room ended this seat. ${BACK.going}`,
+  linkLost: `The connection to the room was lost. ${BACK.going}`,
+  left: `You left the seat. ${BACK.going}`,
   core: 'This seat could not load the right game for this room. Please tell the staff.',
   boot: 'This seat could not start the game. Please tell the staff.',
   // A checkout 429 (cooldown, too_many_checkouts): /rooms' resting text.
-  resting: 'This horse is resting. Going back to the rooms.',
+  resting: `This horse is resting. ${BACK.going}`,
 };
 // A card change that could not be saved (the save queue held or still has
 // it once the seat dropped): said plainly, with no codes, so the member
@@ -142,6 +184,66 @@ const MISSED_SAVED_TEXT = 'Your card was saved to your stable. It did not eject 
 // The eject save's drain with writes pending (conductor's condition for its
 // worst case, about 54 s): shown for the whole drain, with the seconds left.
 const SAVING_TEXT = 'Saving your card, please wait';
+// A NEW HORSE (the hand-off's new_horse with the checkout's; room-seat-handoff.js isNewHorse). The seat starts the
+// game with no card in the reader, the member makes the horse in the game, and the game's first card write creates it
+// in the member's stable (room-save-queue.js newHorse). The horse cannot race before that write has landed (the lobby
+// refuses the race entry until then), so from the game's first card write until the save lands the seat's buttons do
+// nothing (seatInput.hold 'new-horse'), with one of these lines up. The hand-off's empty name is never shown.
+const NEW_HORSE_START_TEXT = 'New horse: make your horse in the game. It can race once it is saved.';
+const NEW_HORSE_SAVING_TEXT = 'Saving your new horse. Your buttons are off until it is saved.';
+const NEW_HORSE_SAVED_TEXT = 'is saved. You can enter the next race.';
+// The first save was refused for the card itself: said plainly, once per refusal, never retried (the queue holds it).
+const NEW_HORSE_REFUSED_TEXT = {
+  race_count: 'Your new horse could not be saved, because its card already shows a race. It cannot race from this seat. Please leave the seat and tell the staff.',
+  rejected: 'Your new horse could not be saved: its card did not pass the checks. It cannot race from this seat. Please leave the seat and tell the staff.',
+  refused: 'Your new horse could not be saved. It cannot race from this seat. Please leave the seat and tell the staff.',
+};
+// ...and once the seat has ended with that write still owed (showHeld): kept for the staff, in the stash.
+const NEW_HORSE_KEPT_TEXT = 'Your new horse could not be saved. Its card is kept in this browser for the staff to check. Please tell the staff.';
+// THE OTHER HORSE (room-save-queue.js onOtherHorse: a save refused with the code 'other_horse'). The card in this
+// seat's reader is not the horse this seat was opened for: the member made a new horse in the game here, and the game
+// wrote it over the card file. Nothing of it is saved (the lobby refused it; the write stays in the stash as any held
+// write does), and the seat must not go on racing under the first horse's lease. So (otherHorse, below): the buttons
+// are held at once; the queue drains; one fresh beat says whether a race is owed (the lobby clears race_nonce and
+// entry_sha when a race settles). Nothing owed: the seat closes its own lease and ends, with OTHER_HORSE_TEXT. A race
+// owed, or a beat that did not answer: the lease is NOT closed (a close with a race owed is an abandon), the buttons
+// stay held, and the member is told to leave (OTHER_HORSE_OWED_TEXT); each later beat looks again. The name is the
+// horse label (horseLabel: never an empty name).
+const OTHER_HORSE_TEXT = (name) => `The card in your reader is not ${name}. Nothing was saved for the new horse. To make a new horse, go back to Rooms and choose New horse.`;
+// What is true with a race owed: the seat keeps its lease (the Leave button's end closes no lease while a write is
+// held), the buttons do nothing, and Leave seat ends the seat as it always does.
+const OTHER_HORSE_OWED_TEXT = (name) => `The card in your reader is not ${name}. Nothing was saved for the new horse, and your buttons are off. A race is still open for ${name}, so this seat was not closed for you. Press Leave seat to finish.`;
+// While the drain and the fresh beat run (and while a beat has not answered yet).
+const OTHER_HORSE_CHECK_TEXT = (name) => `The card in your reader is not ${name}. Your buttons are off while this seat checks that no race is open.`;
+// The drain before the fresh beat: one post and its timeout (a write behind the refused one).
+const OTHER_HORSE_DRAIN_MS = SAVE_REQUEST_MS + POST_MS;
+// CHANGE HORSE (the owner's decision of 2026-11-23: a player holds the seat, horses come and go; the lobby's contract
+// is doc-arcade docs/rooms/seat-horse-switch.md, the order of work is room-seat-swap.js, the panel is
+// room-seat-chooser.js, docs/seat-contract.md has the whole of it). The texts a refusal shows are the sender's own
+// (the lobby's, or the room server's for a refused hold); these few are the page's, for what only the page knows.
+// The other horse, where the lobby offers a new horse (the pilot, with a slot left): the station is held and the
+// chooser opens with this line and two choices: "New horse" (the card the game wrote is saved as the new horse's,
+// under a new lease) or "Leave seat". No other horse is offered there: the game is in the middle of the new horse's game.
+const OTHER_HORSE_LEAD = (name) => `The card in your reader is not ${name}: you made a new horse in the game. It is not saved yet. Choose New horse to keep it and play on, or leave the seat.`;
+const CHANGE_NOT_YET_TEXT = 'You can change horses once you are in your seat.';
+const CHANGE_ASKING_TEXT = 'Asking for your horses.';
+// THE GAME'S OWN EJECT (the board's card-out: the core's "Card ejected"). The game is done with the card and its last
+// save has landed: the page takes the card out of the reader (so the game can write no other horse over it) and asks
+// "Which horse next?" by itself, with this line. Keep puts the card back: "[A] is in your hand. Press Insert card to
+// put it in."
+const CARD_OUT_LEAD = (name) => `The game has given ${name}'s card back. Take another horse, or keep ${name}.`;
+const CARD_OUT_TEXT = (name) => `The game has given ${name}'s card back.`;
+const READER_STUCK_TEXT = 'Your card could not be put back in the reader. Leave the seat and sit down again to go on with this horse.';
+// A card that went in and that the game never took up (its STATE stayed at the attract screen's) is not "in the game"
+// after this long: Change horse is then not refused for it.
+const CARD_IDLE_MS = 30000;
+// The old card's last look (the board's answer) and its queue's drain before a change: one post and its timeout.
+const SWAP_LOOK_MS = 12000;
+const SWAP_DRAIN_MS = SAVE_REQUEST_MS + POST_MS;
+// The board's answer to a card-swap.
+const SWAP_BOARD_MS = 10000;
+// A seat ticket is not used this close to its end (the room server's clock decides).
+const TICKET_MARGIN_MS = 5000;
 
 const q = new URLSearchParams(roomSeat ? '' : location.search);
 const num = (k, d) => (q.has(k) ? Number(q.get(k)) : d);
@@ -150,9 +252,16 @@ const msg = document.getElementById('msg');
 const statusEl = document.getElementById('status');
 const leaveBtn = document.getElementById('leave');
 const forgetBtn = document.getElementById('forget');
+// "Change horse" (the header, and so the phone's Menu sheet): shown once the board runs, on a page that has the chooser.
+const changeBtn = document.getElementById('change-horse');
 // Page errors, counted for the seat report (text clipped, printable only).
 const pageErrors = { count: 0, last: null };
-const notePageError = (t) => { pageErrors.count++; pageErrors.last = reportText(String(t)); };
+// THE PAGE'S OWN LOG (room-seat-report.js; docs/problem-reports.md): its last lines, each with its time, kept in the
+// page and bounded (80 of the page's own, 20 of the board's). Shown nowhere and sent nowhere, unless the player
+// presses "Report a problem" and then Send. Every line is scrubbed as it is kept (no address, no token, no query).
+const seatLog = createSeatLog({ max: 80 });
+const boardLog = createSeatLog({ max: 20 });
+const notePageError = (t) => { pageErrors.count++; pageErrors.last = reportText(String(t)); seatLog.add('error', t); };
 if (seatInputFault) notePageError(seatInputFault);
 if (typeof window.addEventListener === 'function') {
   window.addEventListener('error', (e) => notePageError(e && e.message ? e.message : 'error'));
@@ -161,6 +270,11 @@ if (typeof window.addEventListener === 'function') {
 const autoLeave = (() => { const a = parseAutoLeave(q); return a ? createAutoLeave(a) : null; })();
 // The room seat keeps the player's game files in this browser (batch 1): picked once, used again next time. The lab: cachegame=1.
 const cache = roomSeat || q.get('cachegame') === '1' ? createGameCache() : null;
+// KNOWN-GOOD GAME FILES (game-check.js, docs/game-file-check.md): the files a seat is given are checked against the pin
+// table before they are used or cached, and the board checks again what it is handed. A room seat always checks (its
+// address carries no switches: q is empty). LAB ONLY: gamepin=off, for a lab run with files changed on purpose.
+const gameCheck = gameCheckWanted({ roomSeat, param: q.get('gamepin') });
+const CHECKING_TEXT = 'Checking the game files.';
 // LAB ONLY: artificial delay, jitter and loss on this seat's link (latency
 // tolerance test). Off unless labnetem=1 comes with the netem params.
 const netemParsed = parseNetem(q);
@@ -191,6 +305,18 @@ try { presses = JSON.parse(q.get('presses') || '[]'); } catch { presses = []; }
 const state = { phase: 'connecting', refused: null, settings: null, hasCard: false, board: { ready: false, loaded: false, samples: [], watch: [], errors: [], logs: [], counts: newWatchCounts() },
   cardWrites: 0, cardAcks: [], link: null, rtc: null, gone: false, goneReason: null, left: null, mode: roomSeat ? 'room' : 'lab', leaseEnd: null, roomEnd: null };
 window.seat = { state };
+// THE CARE EVENTS (care-recorder.js; docs/care-events.md under host/): what the player chose in feeding, training and
+// the reply after a race, as this seat's own board saw it. Kept here (bounded), shown nowhere, for inspection only:
+// window.seat.care(). Every address behind them is unconfirmed in a browser seat (the view says so).
+const careLog = createCareLog();
+// THE SENDER SEAM, OFF. Care events would be posted to the lobby with the lease from here, once the lobby has a route
+// (it has none; the doc proposes the shape). Until then: enabled false and no send function, so nothing leaves the page.
+const CARE_SEND = false;
+const careOutbox = createCareOutbox({ enabled: CARE_SEND, send: null });
+window.seat.care = () => careLog.view();
+// Whether the seat's buttons are held off right now (the warm join, a new horse being saved, the pad's arrange mode): a
+// yes or no for the page's own tests and the lab, nothing else.
+window.seat.inputHeld = () => (seatInput ? seatInput.held() : null);
 if (netem) { state.netem = { ...netemParsed.netem, stats: netem.stats }; }
 
 let files = null;
@@ -215,6 +341,9 @@ let boardDead = false;
 // 1d commit 5: the room seat's save queue (room-save-queue.js), made once the
 // card is checked out. Every board write goes to it (never to the link).
 let saveQueue = null;
+// A NEW HORSE: the checkout handed out no card (set with the save queue; the board then boots with no card in its
+// reader and watches for the game's first write). False for every seat with a card.
+let newCard = false;
 // The DOC '99 eject's card came out (the room seat: its write is then in the
 // save queue, counted by unstashed() until the stash keeps it).
 let ejectOut = false;
@@ -256,6 +385,33 @@ let boardEndsAt = 0;
 let goneWait = null;
 // The pending way back (finishRoomSeat), cancelled by a late held card.
 let backTimer = null;
+// THIS VISIT'S LEASES (room-lease-session.js). One seat visit runs its leases in sequence, one at a time: the
+// hand-off's first, then one more for each horse change. `session` is the lease the seat holds NOW (its view of the
+// hand-off, its lease client, its save queue); the `lease` and `saveQueue` the rest of this page reads are always
+// that session's. A visit with no change has one session, made from the hand-off as it is: nothing differs.
+const sessions = createLeaseSessions({ onNote: (t) => notePageError(t) });
+let session = null;
+// A horse change in progress (changeTo): { old, session, step, oldEnd, newEnd }, else null.
+let swapRun = null;
+// The card generation last given to the board (lb-board-worker.js card-swap): 0 is the card it booted with.
+let cardGen = 0;
+// The board's answer to a card-swap (boardCardSwap).
+let swapWait = null;
+// The card generation the board has CONFIRMED (cardGen runs one ahead while a card-swap is on its way to the board).
+let boardGen = 0;
+// The horse chooser's panel (room-seat-chooser.js) and the calls a change makes (room-seat-net.js); made further
+// down, where the page is set up. null: this page cannot change horses (the lab seat, or a page without the panel).
+let chooser = null;
+let seatCalls = null;
+// The chooser is being asked for (the lobby's list is on its way): one ask at a time.
+let chooserAsking = false;
+// THE CARD READER as the page knows it (the board's card-in and card-out, lb-board-worker.js readerEvents). in: the card
+// is in the game (the insert button went down with a card in the reader, or the game wrote a card, and the game has
+// not ejected it since). empty: the page took the card out of the reader after the game's own eject, until the
+// member chooses (cardCameOut). outs: ejects seen. inAt: when the card went in.
+const reader = { in: false, inAt: 0, outs: 0, empty: false };
+// The automatic chooser is on its way (cardCameOut): one at a time.
+let cardOutBusy = false;
 // #169: every leave goes through seatLeave (mp-seat-eject.js createSeatLeave):
 // on DOC '99 with a card in, the CARD sequence runs before leave()'s card
 // look and its close. Rev C: leave() as before. Every room seat end runs it
@@ -311,8 +467,10 @@ link.onmessage = (e) => {
   // room's link (1c); the lab keeps the room's card.
   if (m.type === 'card') { if (handoff) return; card = m.bytes; state.hasCard = true; maybeStart(); return; }
   if (m.type === 'refused') { state.refused = m.reason; state.phase = 'refused'; msg.textContent = `The room refused this seat (${m.reason}).`; offerEnded(); return; }
-  if (m.type === 'taken') { if (m.info && typeof m.info.resume === 'string') resumeInfo = { key: m.info.resume, ms: Number(m.info.resumeMs) || 0 }; if (state.warm) { state.warm = false; if (seatInput) seatInput.unholdWhenIdle('warm'); msg.textContent = settings ? `Seat ${settings.slot}. You can enter the next race.` : msg.textContent; } return; }
+  if (m.type === 'taken') { stationMine = true; if (m.info && typeof m.info.resume === 'string') resumeInfo = { key: m.info.resume, ms: Number(m.info.resumeMs) || 0 }; if (state.warm) { state.warm = false; if (seatInput) seatInput.unholdWhenIdle('warm'); msg.textContent = settings ? (newHorseWaiting() ? `Seat ${settings.slot}. ${NEW_HORSE_START_TEXT}` : `Seat ${settings.slot}. You can enter the next race.`) : msg.textContent; } return; }
   if (m.type === 'card-ack') { state.cardAcks.push(m.verdict); return; }
+  // The room is restarting (room-closing.js ROOM_RESTART_REASON): said at once, saved, and back to the lobby.
+  if (m.type === 'eject' && m.reason === ROOM_RESTART_REASON) { roomRestarting(); return; }
   // L2 (DOC '99 closing): the room asks for the eject save now. The seat's
   // own leave takes the card out (its last card look, whose write goes up
   // first) and closes as a finish; the room ends the seat itself if this does
@@ -364,6 +522,7 @@ function reconnectStart(reason) {
   if (reconnect) { reconnectRetry(reason); return true; }
   if (!resumeInfo || !resumeInfo.ms || !started || !(state.phase === 'linking' || state.phase === 'seated' || state.phase === 'welcomed')) return false;
   if (state.roomEnd) return false;
+  if (state.restarting) return false; // the room said it is restarting: there is no way back to this room
   reconnect = { since: Date.now(), until: Date.now() + resumeInfo.ms - 1500, tries: 0, prevPhase: state.phase, why: reason, timer: null, sig: null, peer: null };
   state.phase = 'reconnecting';
   state.reconnects = (state.reconnects || 0) + 1;
@@ -425,12 +584,26 @@ function reconnectGiveUp(why) {
   reconnectSettled();
 }
 // THE LEASE (step 1b): beat AT ONCE, then every heartbeat_s. A room seat only.
-const lease = handoff ? createSeatLease({ handoff, onReply: leaseReply, onEnd: leaseEnded, onTrouble: (on) => { state.leaseTrouble = on; } }) : null;
-if (lease) window.seat.lease = { state: lease.state, stats: lease.stats }; // no nonce on window
+// One lease client per session (openSession), each with its own answers: a reply or an end of a lease the seat no
+// longer holds never reaches the page's logic. `lease` is the CURRENT session's client, whichever that is: every
+// call goes to session.lease, so the page's end paths, saves and closes always act on the lease held now.
+function openSession(view, name, gen) {
+  const s = sessions.add({ view, lease: null, name, gen });
+  s.lease = createSeatLease({ handoff: view, onReply: (b) => leaseReply(b, s), onEnd: (i) => leaseEnded(i, s), onTrouble: (on) => { if (s === session) state.leaseTrouble = on; } });
+  return s;
+}
+if (handoff) session = openSession(handoff, handoff.horse_name, 0);
+const lease = handoff ? {
+  start: () => session.lease.start(), stop: () => session.lease.stop(), close: () => session.lease.close(),
+  checkout: (o) => session.lease.checkout(o), beatNow: () => session.lease.beatNow(), timeLeft: () => session.lease.timeLeft(),
+  facts: () => session.lease.facts(), closing: () => session.lease.closing(), state: () => session.lease.state(), trouble: () => session.lease.trouble(),
+  get stats() { return session.lease.stats; },
+} : null;
+if (lease) window.seat.lease = { state: lease.state, get stats() { return lease.stats; } }; // no nonce on window
 if (intake && intake.go) {
   state.phase = 'refused';
   state.refused = `no hand-off (${intake.status})`;
-  msg.textContent = 'Going back to the rooms.';
+  msg.textContent = BACK.going;
 } else if (netemParsed.error) {
   state.phase = 'refused';
   state.refused = netemParsed.error;
@@ -554,7 +727,19 @@ async function onFilesPicked() {
   try {
     const b = await bios.arrayBuffer();
     const g = await game.arrayBuffer();
-    files = [['naomi.zip', b], [set.game, g]];
+    const got = [['naomi.zip', b], [set.game, g]];
+    if (gameCheck) {
+      // Refused files are never used and never cached; the player may pick again (nothing has started).
+      const before = msg.textContent;
+      msg.textContent = CHECKING_TEXT;
+      const r = await checkGameFiles({ edition: set.edition, files: got });
+      if (state.roomEnd) return; // the seat ended meanwhile: keep its notice
+      if (!r.ok) { state.gameRefused = { which: r.which, why: r.why }; msg.textContent = gameRefusalText(r); return; }
+      state.gameRefused = null;
+      state.gameChecked = { edition: set.edition, weak: r.weak.length };
+      if (msg.textContent === CHECKING_TEXT) msg.textContent = before;
+    }
+    files = got;
     fileSource = 'picked';
     filesEdition = set.edition;
   } catch {
@@ -591,7 +776,22 @@ if (cache && isolated && peek && peek.tag && !netemParsed.error) {
     if (state.roomEnd) return; // after an end: keep its notice
     if (r.ok) {
       forgetBtn.hidden = false;
-      if (!files && !picking) { files = r.files; fileSource = 'cached'; filesEdition = cacheEdition; msg.textContent = 'Using the game files cached in this browser.'; maybeStart(); }
+      const use = () => { files = r.files; fileSource = 'cached'; filesEdition = cacheEdition; msg.textContent = 'Using the game files cached in this browser.'; maybeStart(); };
+      if (files || picking) return;
+      if (!gameCheck) { use(); return; }
+      // The cached copy passes the same check as a picked one; a refused copy is forgotten, and the player picks again.
+      checkGameFiles({ edition: cacheEdition, files: r.files }).then((c) => {
+        if (state.roomEnd || files || picking) return; // an end, or a pick, won meanwhile
+        if (!c.ok) {
+          state.gameRefused = { which: c.which, why: c.why };
+          cache.forget().then(() => {}, () => {});
+          forgetBtn.hidden = true;
+          msg.textContent = `${gameRefusalText(c)} Pick the game files again.`;
+          return;
+        }
+        state.gameChecked = { edition: cacheEdition, weak: c.weak.length };
+        use();
+      });
     } else if (r.reason !== 'none') {
       forgetBtn.hidden = false;
       if (files || picking) return; // a pick already won; nothing to ask for
@@ -613,11 +813,83 @@ function ejectCard() {
   });
 }
 
+// The page's sound: the ring the board's audio goes into, played by this page, and the main cabinet's sound beside it
+// (room-seat-audio.js). On by default, with the header's mute buttons and levels. Made ONCE, when the page is set up:
+// the context, the worklet and the main channel are there through the whole wait, and the board's start only takes
+// the ring (no new context, nothing the main sound could click on). Made without waiting for anything, so the board
+// starts as before; a page that cannot play sound runs the seat silent, as it always did. The browser plays nothing
+// until the player has touched the page: until then the large prompt over the main screen (#sound-ask) says so, and
+// it comes back whenever the browser takes the sound away. Returns the board's msg.audio, or null.
+function startSeatAudio() {
+  if (seatAudio) return seatAudio.source;
+  try {
+    const ask = document.getElementById('sound-ask');
+    const mainEl = document.getElementById('main-audio');
+    const btn = document.getElementById('sound');
+    const lvl = document.getElementById('sound-level');
+    const mbtn = document.getElementById('main-sound');
+    const mlvl = document.getElementById('main-level');
+    const paint = (a) => {
+      state.audio = { context: a.context, built: a.built, muted: a.muted, level: a.level, fault: a.fault };
+      // The prompt: over the main screen whenever the browser is holding sound the player has not muted.
+      if (ask) { const p = soundPromptView(a); if (ask.hidden !== !p.shown) ask.hidden = !p.shown; }
+      if (!btn) return;
+      const v = soundButtonView(a);
+      btn.textContent = v.text; btn.title = v.title; btn.disabled = v.disabled;
+      if (typeof btn.setAttribute === 'function') btn.setAttribute('aria-pressed', String(v.pressed));
+      if (btn.classList) btn.classList.toggle('attn', v.attn);
+      if (lvl) { lvl.disabled = v.disabled; if (document.activeElement !== lvl) lvl.value = String(Math.round(a.level * 100)); }
+      // The second channel: the main cabinet's sound, on the page only once the room's sound has arrived.
+      const mv = mainButtonView(a);
+      if (mbtn) {
+        mbtn.hidden = !mv.shown; mbtn.textContent = mv.text; mbtn.title = mv.title; mbtn.disabled = mv.disabled;
+        if (typeof mbtn.setAttribute === 'function') mbtn.setAttribute('aria-pressed', String(mv.pressed));
+        if (mbtn.classList) mbtn.classList.toggle('attn', mv.attn);
+      }
+      if (mlvl) {
+        mlvl.hidden = !mv.shown; mlvl.disabled = mv.disabled || mv.levelFixed;
+        // A browser that keeps the level to itself (an iPhone): the slider says where the level is.
+        mlvl.title = mv.levelFixed ? 'On this device the main screen sound follows the volume buttons' : 'Main screen sound volume';
+        if (document.activeElement !== mlvl && a.main) mlvl.value = String(Math.round(a.main.level * 100));
+      }
+    };
+    // The main cabinet's sound plays through its own audio element (#main-audio) when the page has one: see
+    // room-seat-audio.js for why, and for the other way (through the context) that is kept for a page without it.
+    seatAudio = createSeatAudio({ win: window, onNote: (t) => notePageError(t), onState: paint, mainEl: mainEl && typeof mainEl.play === 'function' ? mainEl : null });
+    // What the sound is doing and what happened to it (context states, touches that asked, the main sound's way and
+    // state): read this on a phone that has no sound. mainPath('element' | 'graph' | 'auto') switches the main
+    // sound's way for a test.
+    window.seat.audio = () => (seatAudio ? seatAudio.state() : null);
+    window.seat.mainPath = (p) => { if (seatAudio) seatAudio.setMainPath(p); return seatAudio ? seatAudio.state().main : null; };
+    if (ask && typeof ask.addEventListener === 'function') ask.addEventListener('click', () => { if (seatAudio) seatAudio.unlock(); if (typeof ask.blur === 'function') ask.blur(); });
+    if (btn) { btn.hidden = false; if (typeof btn.addEventListener === 'function') btn.addEventListener('click', () => { if (seatAudio) seatAudio.press(); if (typeof btn.blur === 'function') btn.blur(); }); }
+    if (lvl && typeof lvl.addEventListener === 'function') {
+      lvl.hidden = false;
+      lvl.addEventListener('input', () => { if (seatAudio) seatAudio.setLevel(Number(lvl.value) / 100); });
+      // The arrow keys are the game's: the slider never keeps the focus.
+      lvl.addEventListener('change', () => { if (typeof lvl.blur === 'function') lvl.blur(); });
+    }
+    if (mbtn && typeof mbtn.addEventListener === 'function') mbtn.addEventListener('click', () => { if (seatAudio) seatAudio.pressMain(); if (typeof mbtn.blur === 'function') mbtn.blur(); });
+    if (mlvl && typeof mlvl.addEventListener === 'function') {
+      mlvl.addEventListener('input', () => { if (seatAudio) seatAudio.setMainLevel(Number(mlvl.value) / 100); });
+      mlvl.addEventListener('change', () => { if (typeof mlvl.blur === 'function') mlvl.blur(); });
+    }
+    if (mainSound) seatAudio.setMain(mainSound);
+    paint(seatAudio.state());
+    seatAudio.start();
+    return seatAudio.source;
+  } catch (err) {
+    notePageError(`sound not started (${String(err && err.message ? err.message : err).slice(0, 60)})`);
+    return null;
+  }
+}
+
 function maybeStart() {
   // The room seat (review P1-a): only once the card is checked out and its
   // save queue exists, whatever the welcome's card flag (production sends
   // card: false). The lab: the room's card when its welcome says so.
-  if (started || state.roomEnd || !files || !settings || (handoff ? (!saveQueue || !card) : (settings.card && !card))) return;
+  // A NEW HORSE has no card to wait for (newCard, set with its save queue).
+  if (started || state.roomEnd || !files || !settings || (handoff ? (!saveQueue || (!card && !newCard)) : (settings.card && !card))) return;
   // The lab seat: the room's game must be the one this seat loaded (never
   // another edition's). The room seat ends instead (below), so its lease and
   // way back follow the end path.
@@ -686,7 +958,7 @@ function maybeStart() {
     switch (m.type) {
       case 'ready': st.ready = true; if (bootTimer) { clearTimeout(bootTimer); bootTimer = null; } link.postMessage({ type: 'start' }); state.phase = 'linking'; break;
       case 'loaded': st.loaded = true; break;
-      case 'sample': st.samples.push({ f: m.f, status: m.status }); if (st.samples.length > 2000) st.samples.shift(); if (state.phase === 'linking' && parseInt(m.status.comm2 || '0', 16) >> 8 === settings.seats) { state.phase = 'seated'; board.postMessage({ type: 'card-base' }); } break;
+      case 'sample': st.samples.push({ f: m.f, status: m.status }); if (st.samples.length > 2000) st.samples.shift(); if (state.phase === 'linking' && parseInt(m.status.comm2 || '0', 16) >> 8 === settings.seats) { state.phase = 'seated'; if (!state.warm) stationMine = true; board.postMessage({ type: 'card-base' }); } break;
       case 'watch':
         st.watch.push(...m.changes);
         for (const w of m.changes) countWatch(st.counts, w);
@@ -697,19 +969,28 @@ function maybeStart() {
         // The room seat (1d commit 5): every write goes to the save queue
         // (stashed, then host-stable), whatever the link's state; no card
         // bytes on the link. The lab: up the link, as before.
-        if (handoff) {
-          if (!saveQueue) { notePageError('card write before checkout'); break; }
-          lastQueuedSeq = saveQueue.write(m.bytes);
-          // The first write after a no change card look (the board's eject finishing late): the card's state after the miss.
-          if (cardLook && cardLook.wrote === null && cardLook.after === null) cardLook.after = lastQueuedSeq;
-          break;
-        }
+        if (handoff) { roomCardWrite(m.gen, m.bytes); break; }
         link.postMessage({ type: 'card-write', seq: writeSeq, bytes: m.bytes }, [m.bytes]);
         break;
       }
       case 'card-final': if (finalWait) { const r = finalWait; finalWait = null; r(m); } break;
       case 'card-base': state.cardBase = m.base; break; // the board's eject baseline (lab view)
       case 'card-eject': if (ejectWait) { const r = ejectWait; ejectWait = null; r(m); } break;
+      case 'card-swap': if (m.ok === true && Number.isSafeInteger(m.gen)) boardGen = m.gen; if (swapWait) { const r = swapWait; swapWait = null; r(m); } break; // the card in the reader was changed (boardCardSwap)
+      // The card reader's own events (room seat only): the insert button, and the game's own eject.
+      // (An insert press the board saw just before it acted on a card-swap still names the generation it had.)
+      case 'card-in': if (((m.gen ?? 0) === cardGen || (swapWait && (m.gen ?? 0) === boardGen)) && state.hasCard && !reader.empty) { reader.in = true; reader.inAt = Date.now(); cardNowIn(); } break;
+      case 'card-out':
+        if ((m.gen ?? 0) !== cardGen) break;
+        if (reader.in) {
+          reader.in = false;
+          // (A "still in the game" line is no longer true.)
+          if (!state.roomEnd && msg.textContent === SWAP_TEXT.cardIn(horseNow())) msg.textContent = CARD_OUT_TEXT(horseNow());
+          cardCameOut(cardGen);
+        }
+        reader.outs++;
+        state.cardOut = { at: Date.now(), gen: cardGen, n: reader.outs };
+        break;
       // Every board 'error' is fatal (the core's start, the game's load, a
       // retro_run that threw), so a room seat ends as 'bug' with the plain
       // notice. Before 'ready' the board never started: it is dead, no card
@@ -722,30 +1003,98 @@ function maybeStart() {
         }
         break;
       case 'core-refused': st.errors.push(`core refused (${m.why})`); if (handoff) { boardDead = true; endRoomSeat('bug', END_TEXT.core, 0, `core refused (${m.why})`); } break;
-      case 'log': st.logs.push(m.text); if (st.logs.length > 200) st.logs.shift(); break;
+      // The board refused the files it was handed (game-check.js: they are not the ones the page checked, or the
+      // page's check was skipped). The board never started. The cached copy is forgotten, so it is not used again.
+      case 'game-refused': {
+        const note = `game refused (${reportText(String(m.which), 8)} ${reportText(String(m.why), 12)})`;
+        const text = gameRefusalText({ ok: false, which: m.which, why: m.why, name: typeof m.name === 'string' ? m.name.slice(0, 24) : null });
+        st.errors.push(note);
+        if (cache) cache.forget().then(() => {}, () => {});
+        if (handoff) { boardDead = true; endRoomSeat('bug', text, 0, note); } else { state.phase = 'refused'; state.refused = 'game files'; msg.textContent = text; }
+        break;
+      }
+      case 'care': careLog.add(m.events, m.stats); careOutbox.offer(m.events); break;
+      case 'log': st.logs.push(m.text); if (st.logs.length > 200) st.logs.shift(); boardLog.add('board', m.text); break;
       default: break;
     }
   };
   const fileCopies = files.map(([name, bytes]) => [name, bytes.slice(0)]);
+  const audio = startSeatAudio();
+  if (seatAudio) seatAudio.mark('board started');
   board.postMessage({
     type: 'init', label: `board${s.slot}`, index: 0, boardId: 0, seat: s.slot, n: s.n, actAsServer: false, multiboardSlaves: 1,
     edition: s.edition, sessionTag: s.sessionTag, mailbox, cabinet: null, canvas, files: fileCopies, game: s.game,
     frames: 100000000, hashEvery: num('every', 300), pinTime: s.pinTime, jitDet: 1, preserve: true, bank: 'snapshot', dynarec: 1, barrierTimeoutMs: 10000,
-    ctl, frameCounts, hubStatus, autoStart: true, realtimeHz: 0, presses, yieldEvery: 1, verbose: false,
-    card: card ? card.slice(0) : null, watchCard: !!card, netWatch: true, input: seatInput ? seatInput.buffer : null, audio: null, present: null, hidden: false,
+    ctl, frameCounts, hubStatus, autoStart: true, realtimeHz: 0, presses, yieldEvery: 1, verbose: !roomSeat && q.get('verbose') === '1', // LAB ONLY: the core's own log lines
+    card: card ? card.slice(0) : null, watchCard: !!card || newCard, netWatch: true, input: seatInput ? seatInput.buffer : null, audio, present: null, hidden: false,
     corePin: ed ? { edition: ed.edition } : null,
+    // The board checks its files again: a room seat's always does (corePin names the edition); the lab seat's when its check is on.
+    ...(gameCheck && !ed && runEdition ? { gamePin: { edition: runEdition } } : {}),
+    // The care recorder: this player's own board reads a few words a frame (Rev C only; care-recorder.js).
+    careWatch: true,
+    // A NEW HORSE: no card in the reader; the board watches for the card the game writes (lb-board-worker.js).
+    ...(newCard ? { newCard: true } : {}),
+    // The room seat hears the card reader's own events (card-in, card-out): the horse change's eject signal.
+    ...(handoff ? { readerEvents: true } : {}),
   }, [canvas, ...fileCopies.map(([, a]) => a)]);
   if (handoff) bootTimer = setTimeout(() => { bootTimer = null; if (!st.ready && !state.roomEnd) { boardDead = true; endRoomSeat('bug', END_TEXT.boot, 0, 'board boot timeout'); } }, BOOT_LIMIT_MS);
   // The checked-out card lives only in the board's memory file system now.
   card = null;
   leaveBtn.disabled = false;
-  msg.textContent = `Seat ${s.slot} in room ${s.room}.`;
+  if (chooser && changeBtn) changeBtn.hidden = false; // Change horse, from here on (it says so itself while the seat is not seated yet)
+  msg.textContent = newCard ? `Seat ${s.slot} in room ${s.room}. ${NEW_HORSE_START_TEXT}` : `Seat ${s.slot} in room ${s.room}.`;
+}
+
+// ONE CARD WRITE of the room seat's board. It joins the queue of ITS card's generation (room-lease-session.js): the
+// lease the seat holds now; or, for a card of a lease that has ended (a late write after a horse change), that
+// lease's own stopped queue, which only puts it in the stash under the old lease (never posted here, never under
+// another lease); or nothing, when no lease owns that reader or no queue exists yet (noted there).
+function roomCardWrite(gen, bytes) {
+  const w = sessions.write(gen, bytes);
+  if (!w.session) { if (w.loose) state.looseWrites = (state.looseWrites || 0) + 1; return; }
+  if (w.late) { state.lateWrites = (state.lateWrites || 0) + 1; return; }
+  lastQueuedSeq = w.seq;
+  // A card the game writes is a card in the game (a new horse has no insert press to say so).
+  if (!reader.in) { reader.in = true; reader.inAt = Date.now(); }
+  cardNowIn();
+  if (newHorseWaiting()) newHorseWrote();
+  // The first write after a no change card look (the board's eject finishing late): the card's state after the miss.
+  if (cardLook && cardLook.wrote === null && cardLook.after === null) cardLook.after = lastQueuedSeq;
+}
+
+// The card is in the game (the insert button, or the game wrote it): "[name] is in your hand. Press Insert card to
+// put it in." is no longer true, and is taken down at once (the seat test of 2026-11-24: it stayed up through the
+// whole race). The page's 1 s tick looks again, so the line is never up while the card is in.
+function cardNowIn() {
+  if (reader.in && !state.roomEnd && isHandLine(msg.textContent)) msg.textContent = SWAP_TEXT.cardNowIn(horseNow());
+  paintStationLine();
+}
+// The line while the card is in the game says what is true now (room-seat-swap.js stationLine: the card in, a race
+// running, the race over). It replaces only the seat's own lines (the one put up when the station became the
+// seat's, the "in your hand" line, and the last one written here), never a notice, a refusal or a horse change's words.
+let lineWritten = null; // the last line paintStationLine wrote
+let raceWas = { on: false, entered: false, overAt: null }; // the board's race flag as last seen, and when this seat's own race ended
+function paintStationLine() {
+  if (!handoff || state.roomEnd || state.phase !== 'seated' || state.warm || !state.hasCard || reader.empty) return;
+  const c = state.board.counts;
+  const on = !!c.raceOn;
+  if (raceWas.on && !on) raceWas.overAt = raceWas.entered ? Date.now() : null;
+  if (on) raceWas.overAt = null;
+  raceWas.on = on; if (on) raceWas.entered = !!c.entered;
+  const cur = msg.textContent;
+  if (cur !== lineWritten && !isSeatStartLine(cur) && cur !== SWAP_TEXT.cardNowIn(horseNow())) return;
+  const line = stationLine({ name: horseNow(), cardIn: reader.in, raceOn: on, entered: raceWas.entered, overMs: raceWas.overAt === null ? null : Date.now() - raceWas.overAt });
+  if (line === null || line === cur) return;
+  msg.textContent = line;
+  lineWritten = line;
 }
 
 function stopBoard() {
   // An eject save still waiting for the board ends now (the board is gone).
   if (ejectWait) { const r = ejectWait; ejectWait = null; r({ out: false, pressed: 1 }); }
   if (seatInput) { seatInput.input.releaseAll(); }
+  if (seatAudio) { seatAudio.close(); }
+  if (wakeLock) { wakeLock.stop(); }
   if (!board) return;
   Atomics.store(new Int32Array(ctl), 0, 1);
   link.postMessage({ type: 'stop' });
@@ -798,7 +1147,7 @@ function jpCardIn() { return !!(settings && settings.game && settings.game !== R
 // queue's (unstashed); the lab's goes up the link. A browser that leaves
 // anyway is the room's to end.
 if (typeof window.addEventListener === 'function') window.addEventListener('beforeunload', (e) => {
-  const owed = !!(saveQueue && saveQueue.unstashed() > 0);
+  const owed = sessions.unstashed() > 0; // every lease of the visit: a write of any of them not kept would be lost
   const live = state.phase === 'linking' || state.phase === 'seated' || state.phase === 'ejecting' || (state.phase === 'leaving' && !state.closePosted);
   const cardIn = jpCardIn() && live && !(handoff && ejectOut);
   if (cardIn) seatLeave.leave('finish');
@@ -810,7 +1159,9 @@ if (typeof window.addEventListener === 'function') window.addEventListener('befo
 // this with each 2xx reply's body). A closing, or the cap signal, goes to the
 // room server in the seat report (mp-wire.js cleanClosing), which acts on it
 // for this lease and seat; closing_until stays the server's own string.
-function leaseReply(body) {
+function leaseReply(body, s) {
+  // A reply of a lease the seat no longer holds (an answer in flight when the horse was changed) is nobody's.
+  if (s && s !== session) return null;
   // Fresh relay servers with a beat (doc-arcade ROOM_TURN_FIRST): kept on the hand-off, where the next join (a
   // reconnect) and the main view read them, so neither is left with a set that has run out.
   if (handoff && body && Array.isArray(body.ice_servers) && body.ice_servers.length && typeof body.ice_expires_at === 'string' && Number.isFinite(Date.parse(body.ice_expires_at))) {
@@ -827,6 +1178,8 @@ function leaseReply(body) {
   const changed = JSON.stringify(next) !== JSON.stringify(state.leaseClosing || null);
   state.leaseClosing = next;
   if (changed) { sendReport(true); showClosingNotice(next); }
+  // The other horse, with a race owed or no answer yet: each beat that answers looks again (otherHorseDecide).
+  if (handoff && lease && state.otherHorse) otherHorseDecide();
   return next;
 }
 // Batch 1: the room seat says so when its room is closing or this is its last race (the same reply the room server
@@ -834,7 +1187,7 @@ function leaseReply(body) {
 const noticeEl = roomSeat ? document.getElementById('notice') : null;
 function showClosingNotice(c) {
   if (!noticeEl || state.roomEnd) return;
-  const text = closingNoticeText(c);
+  const text = BACK.say(closingNoticeText(c));
   noticeEl.textContent = text;
   noticeEl.hidden = !text;
 }
@@ -851,6 +1204,17 @@ if (!roomSeat) window.seat.leaseHeartbeat = leaseReply;
 // Step 1e: the seat's own Leave closes its lease (seat_lease close, recorded 'seat_closed'), once nothing is left to
 // save (the drain is over: a held write keeps the lease open for its late save), so the member is free at once instead
 // of waiting out the lease. A drop (the room ended the seat, or the link failed) is left to the room and the abandon rules.
+// THE PLACE AT THE ROOM SERVER is given back on every end, once (the third case of 2026-11-24: a Leave while still
+// "waiting for the race in progress" left the reservation holding the seat for ten minutes, and the member's next
+// join was refused). Only while the station was never this seat's (stationMine): once it was, the room itself sees
+// the seat go and the place is not a reservation any more. Keepalive, no token (room-seat-net.js).
+function leavePlace() {
+  if (placeLeft || !handoff || stationMine) return;
+  placeLeft = true;
+  giveBackRefusedSeat({ roomServerUrl: handoff.room_server_url, reservation: handoff.reservation, roomToken: null, leaseId: null });
+}
+// A tab closed or sent elsewhere while the seat waits takes the same way.
+if (roomSeat && handoff) window.addEventListener('pagehide', leavePlace);
 function closeHook(why) {
   if (why !== 'left' || !lease || savesOwed() > 0) return;
   lease.close().then((r) => { state.leaseClose = r; if (!r.ok) notePageError(`lease close ${r.status}${r.code ? ` ${r.code}` : ''}`); }, () => { state.leaseClose = { ok: false, status: 0, code: 'threw' }; });
@@ -869,8 +1233,11 @@ function dropLink() {
 // still beat for a new one. The beat runs beside the eject (the queue reads
 // the nonce when it posts). Otherwise the beat stops at once, as before.
 function endRoomSeat(why, text, delayMs, bugNote = null) {
+  leavePlace(); // at once: the drain below can take a while, and a place that is not seated must not wait for it
   if (!handoff || state.roomEnd) return;
   state.roomEnd = { why, at: Date.now(), back: null };
+  // The horse chooser does not outlive the seat (a change in progress closes it itself when it sees the end).
+  if (chooser && chooser.isOpen() && !swapRun) chooser.close();
   const saving = !!(lease && lease.state() === 'beating' && saveQueue && ((board && !boardDead) || saveQueue.state().pending > 0));
   if (saving) lease.beatNow().catch(() => null);
   else if (lease) lease.stop(); // nothing to save: the beat never outlives the seat
@@ -995,15 +1362,45 @@ function dropRoomSeat(why, text, delayMs) {
   // The lease has ended, or nothing is left to send with writes held
   // (review P2-3): nothing more is tried here, the queue stops (the kept path).
   if (saveQueue && (state.leaseEnd || (saveQueue.state().pending === 0 && saveQueue.state().held > 0))) saveQueue.stop('ended');
-  if (savesOwed() > 0) { showHeld(); return; }
+  if (allOwed() > 0) { showHeld(); return; }
   // A missed eject: its later write landed (in the drain): saved, said so (ruled); else the staff text. Never a way back on its own.
   if (ejectMissed) { msg.textContent = missedText(); showWayBack(handoff.return_path); return; }
   if (text) msg.textContent = text;
-  if (why === 'bug') { showWayBack(handoff.return_path); return; }
+  // A seat bug stays; so does the other horse's end (its notice says where to go, and is not gone in a moment), and
+  // a horse change that could not be finished ('swap': its words say what happened and what to do).
+  if (why === 'bug' || why === 'other_horse' || why === 'swap') { showWayBack(handoff.return_path); return; }
   state.roomEnd.back = handoff.return_path;
   // Not before the board has ended (a queued card write is held instead).
   const wait = Math.max(0, state.roomEnd.at + delayMs - Date.now(), boardEndsAt ? boardEndsAt + BACK_AFTER_BOARD_MS - Date.now() : 0);
-  backTimer = setTimeout(() => { backTimer = null; if (savesOwed() === 0) location.replace(handoff.return_path); }, wait);
+  backTimer = setTimeout(() => { backTimer = null; if (allOwed() === 0) location.replace(handoff.return_path); }, wait);
+}
+// THE ROOM RESTART (the pilot, 2026-11-24; room-closing.js has the whole of it). The room said it is restarting,
+// before its hub stops: the words go up at once, in the status line and as a notice over the game that needs no
+// press, and the seat ends by its ordinary end path (endRoomSeat: one fresh beat, the card made safe, the save queue
+// drained on the live lease, the board stopped last), then goes back to return_path. The seat closes NO lease here
+// (closeHook closes only on the member's own Leave): the room marked this seat as ended by the room, and the room
+// server closes the lease with no fault. The note for the lobby is set first, so it is there however the page goes.
+const RESTART_BACK_MS = 6000;
+let restartNotice = null;
+function roomRestarting() {
+  if (state.restarting) return;
+  state.restarting = { at: Date.now(), note: false };
+  if (state.roomEnd) return; // the seat is ending by itself already: its own words stand
+  msg.textContent = ROOM_RESTART_TEXT;
+  try {
+    if (!restartNotice && typeof document.createElement === 'function') {
+      const d = document.createElement('div');
+      d.id = 'room-restart-notice';
+      d.setAttribute('role', 'alert');
+      d.textContent = ROOM_RESTART_TEXT;
+      d.style.cssText = 'position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);z-index:2147483000;box-sizing:border-box;width:max-content;max-width:min(92vw,34rem);padding:1.1rem 1.3rem;border-radius:.6rem;background:rgba(12,16,24,.94);color:#fff;font:600 1.15rem/1.4 system-ui,sans-serif;text-align:center;box-shadow:0 .4rem 2rem rgba(0,0,0,.6);pointer-events:none';
+      (document.fullscreenElement || document.body).append(d);
+      restartNotice = d;
+    }
+  } catch { /* the status line says it */ }
+  if (!handoff) return; // the lab seat only says it
+  state.restarting.note = markRoomRestartNote();
+  endRoomSeat('restart', ROOM_RESTART_TEXT, RESTART_BACK_MS);
 }
 // The link's end, for the room seat: the room dropped or ended the seat
 // ('dropped'), the link failed ('lost'), or the seat itself left ('left').
@@ -1024,6 +1421,9 @@ function savesOwed() {
   const q = saveQueue.state();
   return q.pending + q.held;
 }
+// ...and with the writes of the visit's EARLIER leases that never landed (a late write after a horse change: held in
+// the stash under its own, ended lease). They keep nothing open; they are only told at the end, as kept (showHeld).
+function allOwed() { return savesOwed() + sessions.oldOwed(); }
 // The seat dropped with a write owed: the way back waits (a pending replace
 // is cancelled, so the page never prompts on its own navigation) and the
 // member is told whether the stash keeps it.
@@ -1031,29 +1431,51 @@ function showHeld() {
   savesHold = true;
   if (backTimer) { clearTimeout(backTimer); backTimer = null; }
   state.roomEnd.back = null;
-  const lost = saveQueue && saveQueue.unstashed() > 0;
+  const lost = sessions.unstashed() > 0;
+  // THE OTHER HORSE: a held write that is another horse's card is never "saved when you go back", so its own notice
+  // stands in for the kept texts, with the link back and no way back on its own. The seat's own end for it
+  // (other_horse) shows that notice alone; any other end (a Leave with a race owed, or the write was the last card
+  // look's) leads with its own words. A write of this horse's own still held adds its kept (or lost) line.
+  if (state.otherHorse && !ejectMissed && (endWhy === 'other_horse' || ownSavesOwed() === 0)) {
+    const notice = OTHER_HORSE_TEXT(otherHorseName());
+    const lead0 = endWhy === 'other_horse' ? '' : noGoing(endText);
+    msg.textContent = [lead0, notice, ownSavesOwed() > 0 ? (lost ? HELD_TEXT : HELD_KEPT_TEXT) : ''].filter(Boolean).join(' ');
+    showWayBack(handoff.return_path);
+    if (keptTimer !== null) { clearTimeout(keptTimer); keptTimer = null; }
+    return;
+  }
   // The queue stopped with every write in the stash: nothing more is tried
   // here, so the member is told and goes back after the notice (a seat bug
   // stays; a card that did not come out stays: staff). No stash at all:
   // never a redirect (the lost text and the link).
-  const goBack = !!(stash && !lost && saveQueue && saveQueue.state().stopped && endWhy !== 'bug' && !ejectMissed);
+  // (After a horse change: the lease held now has nothing owed, or its queue has stopped; an earlier lease's queue
+  // stopped when its lease was replaced.)
+  const goBack = !!(stash && !lost && (saveQueue ? saveQueue.state().stopped || savesOwed() === 0 && sessions.oldOwed() > 0 : sessions.oldOwed() > 0) && endWhy !== 'bug' && endWhy !== 'swap' && !ejectMissed);
   // Not kept: the loss is said on its own. Kept: the end's own notice (not
   // its going back unless the page goes), then that. A card that did not
   // come out (review P3): its own notice first.
-  const lead = ejectMissed ? MISSED_TEXT : endText.replace(/ ?Going back to the rooms\.$/, '');
-  msg.textContent = lost ? [ejectMissed ? MISSED_TEXT : '', HELD_TEXT].filter(Boolean).join(' ') : [lead, goBack ? KEPT_GO_TEXT : HELD_KEPT_TEXT].filter(Boolean).join(' ');
+  const lead = ejectMissed ? MISSED_TEXT : noGoing(endText);
+  // A new horse whose first save was refused for the card itself: it is kept for the staff, and never said to "be saved" later.
+  const newRefused = !!(state.newHorse && !state.newHorse.created && state.newHorse.refused);
+  msg.textContent = lost ? [ejectMissed ? MISSED_TEXT : '', HELD_TEXT].filter(Boolean).join(' ') : [lead, newRefused ? NEW_HORSE_KEPT_TEXT : goBack ? KEPT_GO_TEXT : HELD_KEPT_TEXT].filter(Boolean).join(' ');
   showWayBack(handoff.return_path);
   // A lost write (review P2-2): no way back on its own.
   if (lost && keptTimer !== null) { clearTimeout(keptTimer); keptTimer = null; }
   // A put that settled kept since the last notice: the notice's full time
   // again (review P3). Re-checked when it fires: still kept, nothing lost.
   const settledKept = heldLoose > 0 && !lost;
-  heldLoose = saveQueue ? saveQueue.unstashed() : 0;
+  heldLoose = sessions.unstashed();
   if (goBack && settledKept && keptTimer !== null) { clearTimeout(keptTimer); keptTimer = null; }
-  if (goBack && keptTimer === null) keptTimer = setTimeout(() => { keptTimer = null; if (stash && saveQueue && saveQueue.unstashed() === 0) location.replace(handoff.return_path); }, KEPT_NOTICE_MS);
+  if (goBack && keptTimer === null) keptTimer = setTimeout(() => { keptTimer = null; if (stash && sessions.unstashed() === 0) location.replace(handoff.return_path); }, KEPT_NOTICE_MS);
 }
 // The save queue's every change: the lab view, and the hold after the drop.
-function savesChanged(q) {
+function savesChanged(q, s) {
+  // The queue of a lease the seat no longer holds (a late write after a horse change, kept in the stash or not):
+  // it changes nothing in play; once the seat has dropped, the end's notice says it is kept.
+  if (s && s !== session) {
+    if (state.roomEnd && state.roomEnd.droppedAt !== undefined && allOwed() > 0) showHeld();
+    return;
+  }
   state.saves = { pending: q.pending, held: q.held, stopped: q.stopped };
   if (!state.roomEnd || state.roomEnd.droppedAt === undefined) {
     // In play (review P2-8): a stop is said, the writes go on to the stash.
@@ -1074,9 +1496,11 @@ function savesChanged(q) {
   // automatic way back (as dropRoomSeat; review of 0e29340).
   msg.textContent = ejectMissed ? missedText() : [endText, SAVED_LATE_TEXT].filter(Boolean).join(' ');
   showWayBack(handoff.return_path);
-  if (endWhy === 'bug' || ejectMissed) return;
+  if (endWhy === 'bug' || endWhy === 'swap' || ejectMissed) return;
+  // An earlier lease's write is still kept in the stash: the kept notice and its way back stand (showHeld).
+  if (sessions.oldOwed() > 0) { showHeld(); return; }
   state.roomEnd.back = handoff.return_path;
-  backTimer = setTimeout(() => { backTimer = null; if (savesOwed() === 0) location.replace(handoff.return_path); }, RETURN_NOTICE_MS);
+  backTimer = setTimeout(() => { backTimer = null; if (allOwed() === 0) location.replace(handoff.return_path); }, RETURN_NOTICE_MS);
 }
 // 1d commit 5: the card is checked out once, after the lease's first 2xx
 // beat. A missing or malformed member_hash (the stash's key) is a seat bug
@@ -1084,23 +1508,500 @@ function savesChanged(q) {
 async function checkOut() {
   const r = await lease.checkout({ canRetry: () => !started });
   if (!r.ok || state.roomEnd) return; // a refusal ended the lease: leaseEnded ends the seat
-  const b = r.body || {};
-  const mh = typeof b.member_hash === 'string' ? b.member_hash : '';
-  if (!/^[0-9a-f]{64}$/.test(mh)) { endRoomSeat('bug', END_TEXT.bug, 0, 'checkout without member_hash'); return; }
-  let bytes = null;
-  try { bytes = Uint8Array.from(atob(String(b.card_b64 || '')), (ch) => ch.charCodeAt(0)); } catch { bytes = null; }
-  if (!bytes || bytes.length === 0 || !Number.isSafeInteger(b.last_seq) || b.last_seq < 0 || b.horse_id !== handoff.horse_id) { endRoomSeat('bug', END_TEXT.bug, 0, 'checkout answer refused'); return; }
+  // The answer against the hand-off (seat-lease.js readCheckout): a card, or a NEW HORSE (both say new_horse and
+  // there is no card), or a refusal.
+  const c = readCheckout(r.body, handoff);
+  if (!c.ok) { endRoomSeat('bug', END_TEXT.bug, 0, c.why); return; }
   await stashOpen;
   if (state.roomEnd) return;
-  saveQueue = createSaveQueue({
-    handoff, firstSeq: b.last_seq + 1, stash, memberHash: mh, edition: releaseEdition(handoff.release),
-    nonce: () => lease.facts().race_nonce, refreshNonce: () => lease.beatNow(), timeLeft: () => lease.timeLeft(),
-    onChange: savesChanged, onNote: (t) => notePageError(t),
-  });
-  state.checkedOut = { lastSeq: b.last_seq };
-  card = bytes.buffer;
+  saveQueue = makeQueue(session, c);
+  if (c.newHorse) {
+    // No card to load: the board boots with an empty reader and the game makes the horse.
+    state.checkedOut = { lastSeq: c.lastSeq, newHorse: true };
+    state.newHorse = { created: false, writes: 0, held: false, refused: null, name: null };
+    newCard = true;
+    maybeStart();
+    return;
+  }
+  state.checkedOut = { lastSeq: c.lastSeq };
+  // The lease's card as it stands (its checkout's, then each write the game makes): kept in this page's memory
+  // only, for putting the card back in the reader after the game's own eject (refillReader). Never stored.
+  session.card = c.card.slice();
+  card = c.card.buffer;
   state.hasCard = true;
   maybeStart();
+}
+// ONE SAVE QUEUE PER LEASE. Each card generation of the reader belongs to one lease (its card as checked out; and,
+// when the member keeps the horse after the game's own eject, the same card put back under a new generation, which
+// is the same lease's and joins the same queue). Every post
+// of this queue carries s.view's lease id and horse id and reads s's own lease client for its nonce and its time:
+// it can never post under another lease. What it tells the page reaches the page's logic only while s is the lease
+// the seat holds (the callbacks below; savesChanged).
+function makeQueue(s, c) {
+  const mine = (fn) => (x) => { if (s === session) fn(x); };
+  s.newHorse = c.newHorse === true;
+  s.queue = createSaveQueue({
+    handoff: s.view, firstSeq: c.lastSeq + 1, stash, memberHash: c.memberHash, edition: releaseEdition(handoff.release),
+    nonce: () => s.lease.facts().race_nonce, refreshNonce: () => s.lease.beatNow(), timeLeft: () => s.lease.timeLeft(),
+    onChange: (q) => savesChanged(q, s), onNote: (t) => notePageError(t), onOtherHorse: mine(otherHorse),
+    // A NEW HORSE only. No cardName seam is passed: this repository holds no card layout to read a name from, so the
+    // first save names nothing and the route answers with the card's own name (room-save-queue.js).
+    ...(c.newHorse ? { newHorse: true, onCreated: mine(newHorseCreated), onFirstRefused: mine(newHorseRefused) } : {}),
+  });
+  return s.queue;
+}
+// The horse the seat holds now, as the page names it: the name the lobby showed for it (the hand-off's, or the
+// chooser's after a change), the name its first save was given for a new horse, never an empty name.
+function horseNow() { return horseLabel({ horse_name: session ? session.name : '' }, state.newHorse && state.newHorse.name ? state.newHorse.name : null); }
+// A NEW HORSE whose first save has not landed yet (false for every seat with a card).
+function newHorseWaiting() { return newCard && !!state.newHorse && !state.newHorse.created; }
+// The game wrote the new horse's card (its save is in the queue): the buttons are off until it lands, so the horse
+// cannot be entered in a race the lobby would refuse.
+function newHorseWrote() {
+  const n = state.newHorse;
+  n.writes++;
+  n.refused = null; // a new first save
+  if (!n.held) { n.held = true; if (seatInput) seatInput.hold('new-horse', true); }
+  // (A queue that has stopped sends nothing: its own paused notice stays.)
+  if (!state.roomEnd && !saveQueue.state().stopped) msg.textContent = NEW_HORSE_SAVING_TEXT;
+}
+// The first save landed: a normal seat from here on.
+function newHorseCreated({ name }) {
+  const n = state.newHorse;
+  if (!n) return;
+  n.created = true; n.refused = null; n.name = name || null;
+  if (n.name && session) session.name = n.name; // what the chooser's "Keep [name]" says from now on
+  state.hasCard = true;
+  if (n.held) { n.held = false; if (seatInput) seatInput.unholdWhenIdle('new-horse'); }
+  if (!state.roomEnd) msg.textContent = `${n.name ? horseLabel(session.view, n.name) : 'Your new horse'} ${NEW_HORSE_SAVED_TEXT}`;
+}
+// The first save was refused for the card itself (409 race_count, 422, or another held answer): said plainly; the
+// queue holds the write and tries nothing more; the buttons stay off (the horse cannot race), Leave still works.
+function newHorseRefused({ status, why }) {
+  const n = state.newHorse;
+  if (!n || n.created) return;
+  n.refused = { status, why };
+  notePageError(`new horse save refused (${status} ${why})`);
+  if (!state.roomEnd) msg.textContent = NEW_HORSE_REFUSED_TEXT[why] || NEW_HORSE_REFUSED_TEXT.refused;
+}
+// THE OTHER HORSE (the texts above). The queue tells this once, and only for a horse that has a card (a NEW HORSE's
+// first save refused is newHorseRefused's, never this: room-save-queue.js sawHeld), so the two paths never both run.
+function otherHorseName() { return horseNow(); }
+// The held writes that are this horse's own (not the other horse's card): they keep the lease open for a late save.
+function ownSavesOwed() { return saveQueue ? Math.max(0, savesOwed() - saveQueue.heldOther()) : 0; }
+function otherHorse({ seq, status }) {
+  if (state.otherHorse) return;
+  const o = { seq, status, at: Date.now(), owed: null, closed: null, late: !!state.roomEnd, checking: false };
+  state.otherHorse = o;
+  notePageError(`the card is another horse (${status}, seq ${seq})`);
+  // The seat is ending already (the write was its last card look's, or in flight at the drop): the end's own notice
+  // says it (showHeld); nothing is closed here.
+  if (state.roomEnd) { if (state.roomEnd.droppedAt !== undefined && savesOwed() > 0) showHeld(); return; }
+  if (seatInput) seatInput.hold('other-horse', true); // at once: nothing more is played on this lease
+  msg.textContent = OTHER_HORSE_CHECK_TEXT(otherHorseName());
+  sendReport(true); // the room's log names it (the page error above)
+  otherHorseCheck();
+}
+// The drain, then ONE fresh beat, then the decision on that beat's own facts.
+async function otherHorseCheck() {
+  const o = state.otherHorse;
+  o.checking = true;
+  let fresh = false;
+  try {
+    await saveQueue.drain(OTHER_HORSE_DRAIN_MS);
+    if (state.roomEnd) return;
+    const asked = Date.now();
+    await lease.beatNow();
+    const f = lease.facts();
+    fresh = f.at !== null && f.at >= asked; // this beat answered 2xx (a blip leaves the old facts)
+  } catch { fresh = false; } finally { o.checking = false; }
+  if (state.roomEnd) return;
+  if (fresh) otherHorseDecide();
+  // No answer: nothing is known, so nothing is closed; the next beat that answers decides (leaseReply).
+}
+// On a beat's fresh facts: a race owed keeps the lease and the hold; nothing owed closes the lease and ends the seat.
+function otherHorseDecide() {
+  const o = state.otherHorse;
+  if (!o || o.late || o.checking || o.owed === false || state.roomEnd) return;
+  const f = lease.facts();
+  const name = otherHorseName();
+  // Owed: the lobby names a race (its nonce and entry sha are cleared when the race settles; on DOC '99 the nonce
+  // stays for the stint), or the lease is closing (its own clock ends it).
+  o.owed = f.race_nonce !== null || f.entry_sha !== null || !!(state.leaseClosing && state.leaseClosing.closing);
+  if (o.owed) { msg.textContent = OTHER_HORSE_OWED_TEXT(name); return; }
+  // Nothing owed. WHERE THE LOBBY OFFERS A NEW HORSE (the pilot, with a slot left) the seat is not ended: the station
+  // is put on hold and the chooser opens, so the member can keep the horse they just made (the new horse flow) or
+  // leave (otherHorseOffer). Asked once; everywhere else (the real stable, a full pilot, a
+  // lobby or room server that cannot say), and when the member chooses to leave, the stopgap's safe ending below.
+  if (o.offer === undefined && chooser && seatCalls) { otherHorseOffer(o); return; }
+  if (o.offer === 'asking' || o.offer === 'open') return;
+  otherHorseEnd();
+}
+// The other horse's safe ending (the stopgap of 2026-11-23, unchanged): the lease is closed and the seat ends.
+function otherHorseEnd() {
+  const o = state.otherHorse;
+  if (!o || state.roomEnd) return;
+  const name = otherHorseName();
+  // The close first (seat-lease.js close: the normal path, once), so no race can be entered on this
+  // lease from here on; then the seat's normal end (the card look, the link's close, the board last). A write of this
+  // horse's own still held keeps the lease open for its late save, as on every end: then no close.
+  if (ownSavesOwed() > 0) o.closed = { ok: false, status: 0, code: 'saves owed' };
+  else lease.close().then((r) => { o.closed = r; state.leaseClose = r; if (!r.ok) notePageError(`lease close ${r.status}${r.code ? ` ${r.code}` : ''}`); }, () => { o.closed = { ok: false, status: 0, code: 'threw' }; });
+  endRoomSeat('other_horse', OTHER_HORSE_TEXT(name), 0);
+}
+// The other horse, nothing owed: ask the lobby whether a new horse may be made here. Yes (the pilot, with a slot
+// left): the station goes on hold at once (no race is entered under the first horse's lease while the member
+// chooses) and the chooser opens. A hold refused for a race in flight is a race owed after all: the owed notice, and
+// the next beat looks again. Anything else: the safe ending.
+async function otherHorseOffer(o) {
+  o.offer = 'asking';
+  let view = null;
+  try { view = (await askHorses('other')).view; } catch { view = null; }
+  if (state.roomEnd || state.otherHorse !== o) return;
+  if (!(view && view.ok && view.canSwap && view.rows.some((x) => x.kind === 'new' && !x.disabled))) { o.offer = 'none'; otherHorseEnd(); return; }
+  let h = null;
+  try { h = await seatCalls.room('hold'); } catch { h = null; }
+  if (state.roomEnd || state.otherHorse !== o) return;
+  if (!(h && !h.network && h.status >= 200 && h.status < 300 && h.body.ok !== false)) {
+    if (h && !h.network && h.status === 409 && h.body && h.body.code === 'race_owed') { o.offer = undefined; o.owed = true; msg.textContent = OTHER_HORSE_OWED_TEXT(otherHorseName()); return; }
+    o.offer = 'none';
+    otherHorseEnd();
+    return;
+  }
+  o.offer = 'open';
+  msg.textContent = OTHER_HORSE_LEAD(otherHorseName());
+  chooser.open(view, OTHER_HORSE_LEAD(otherHorseName()));
+}
+
+// ---- CHANGE HORSE: the chooser and the change (the texts above; room-seat-swap.js has the order and every crash
+// point; docs/seat-contract.md the whole of it) ----
+
+// The lobby's list for the lease held now, as the chooser shows it. { a: the answer, view: chooserView or null }.
+async function askHorses(mode) {
+  const a = await seatCalls.lobby({ action: 'horses', lease_id: session.view.lease_id });
+  const ok = !!a && !a.network && a.status >= 200 && a.status < 300;
+  return { a, view: ok ? chooserView(a.body, { currentName: state.newHorse && !state.newHorse.created ? '' : horseNow(), mode }) : null };
+}
+// "Change horse" was pressed: the list is asked for, and the panel opens with it. While the panel is open every game
+// input is held (the chooser's onOpen); nothing else has happened yet (the station is put on hold only once a horse
+// is chosen, so a player who only looks, or keeps the horse, costs the room nothing).
+async function askChangeHorse() {
+  if (!chooser || !seatCalls || state.roomEnd || swapRun || chooserAsking || cardOutBusy || chooser.isOpen() || state.otherHorse) return;
+  if (!board || boardDead || state.phase !== 'seated' || state.warm) { msg.textContent = CHANGE_NOT_YET_TEXT; return; }
+  // The card is in the game: the game would write THIS horse over any card put in the reader under it. A change
+  // waits for the game's own eject (which opens this panel by itself).
+  if (cardInPlay()) { msg.textContent = SWAP_TEXT.cardIn(horseNow()); return; }
+  chooserAsking = true;
+  // From the press on, the Insert button is kept from the game (lab run of 2026-11-22: a card that goes in while
+  // its file is being changed comes out a mix of two cards): the panel holds the input itself once it is open.
+  if (seatInput) seatInput.hold('change-ask', true);
+  const before = msg.textContent;
+  msg.textContent = CHANGE_ASKING_TEXT;
+  let r = null;
+  let opened = false;
+  try {
+    try { r = await askHorses('change'); } catch { r = null; }
+    if (state.roomEnd || swapRun || state.otherHorse) return;
+    if (msg.textContent === CHANGE_ASKING_TEXT) msg.textContent = before;
+    // (A press the board saw in the frame of the click: the card is in the game after all.)
+    if (cardInPlay()) { msg.textContent = SWAP_TEXT.cardIn(horseNow()); return; }
+    const a = r ? r.a : null;
+    // No list: the lobby's own words for a refusal (a lease that has ended is ended by its own beat, as ever).
+    if (!r || !r.view) { msg.textContent = !a || a.network || a.status >= 500 ? SWAP_TEXT.lobbyUnreachable : refusalWords(a.body, a.status); return; }
+    if (!r.view.ok) { msg.textContent = SWAP_FALLBACK_TEXT; return; }
+    chooser.open(r.view);
+    opened = true;
+  } finally {
+    chooserAsking = false;
+    if (seatInput) { if (opened) seatInput.hold('change-ask', false); else seatInput.unholdWhenIdle('change-ask'); }
+  }
+}
+// "Keep [name]" (or Escape): the panel closes and nothing has changed.
+// (After the game's own eject the page had taken the card out of the reader: Keep puts it back.)
+function chooserKeep() {
+  if (chooser) chooser.close();
+  if (reader.empty && !state.roomEnd && !swapRun) refillReader(session);
+}
+// The panel's own "Leave seat" (it covers the page's Leave button): one press. The horse is kept (after the game's
+// own eject the card goes back in the reader, with nothing said), and then the seat leaves as its Leave button
+// does, with no second question: the press was on a button that says so, in a panel that holds every game input.
+// (A card that cannot be put back does not hold the leave: its last save had landed before the panel opened.)
+async function chooserLeaveSeat() {
+  if (!chooser || swapRun || state.roomEnd) return;
+  chooser.close();
+  if (reader.empty) { try { await refillReader(session, { quiet: true }); } catch { /* the leave goes on */ } }
+  if (state.roomEnd) return;
+  seatLeave.leave('finish');
+}
+// The other horse's panel has no keep: its last button leaves the seat (the safe ending), the hold given back first.
+function chooserLeave() {
+  if (chooser) chooser.close();
+  const o = state.otherHorse;
+  if (o) o.offer = 'left';
+  if (seatCalls) Promise.resolve().then(() => seatCalls.room('release-hold')).catch(() => {});
+  otherHorseEnd();
+}
+// The board changes the card in its reader (lb-board-worker.js card-swap): its answer, or { ok: false } after SWAP_BOARD_MS.
+function boardCardSwap({ gen, bytes = null, adopt = false }) {
+  if (!board || boardDead) return Promise.resolve({ ok: false, why: 'no board' });
+  if (swapWait) return Promise.resolve({ ok: false, why: 'busy' });
+  return new Promise((resolve) => {
+    swapWait = resolve;
+    board.postMessage({ type: 'card-swap', gen, bytes, adopt: adopt === true }, bytes ? [bytes] : []);
+    setTimeout(() => { if (swapWait === resolve) { swapWait = null; resolve({ ok: false, why: 'no answer' }); } }, SWAP_BOARD_MS);
+  });
+}
+// LAB ONLY: change the card in the lab seat's reader by hand (the room seat has no such hook).
+if (!roomSeat) window.seat.cardSwap = (bytes, adopt = false) => boardCardSwap({ gen: ++cardGen, bytes: bytes || null, adopt });
+// Step 1 of a change: the old card's last look (a change it finds joins the old lease's queue, under the old card's
+// generation), then that queue's drain. A write of the old horse's own that has not landed stops the change: its
+// lease is about to end, and a save after that is only ever a late save.
+async function oldCardOut(old) {
+  if (board && !boardDead) {
+    if (finalWait) return { ok: false, words: SWAP_FALLBACK_TEXT }; // a leave is looking at the card
+    await new Promise((resolve) => {
+      finalWait = resolve;
+      board.postMessage({ type: 'card-final' });
+      setTimeout(() => { if (finalWait === resolve) { finalWait = null; resolve(null); } }, SWAP_LOOK_MS);
+    });
+  }
+  if (state.roomEnd) return { ok: false, words: SWAP_FALLBACK_TEXT };
+  if (old.queue) { try { await old.queue.drain(SWAP_DRAIN_MS); } catch { /* judged below */ } }
+  const q = old.queue ? old.queue.state() : { pending: 0, held: 0 };
+  const own = q.pending + q.held - (old.queue ? old.queue.heldOther() : 0);
+  return own > 0 ? { ok: false, words: SWAP_TEXT.cardBusy(horseNow()) } : { ok: true };
+}
+// Step 4: the lobby has changed the lease. The new lease is the seat's from here: its session is made and beaten at
+// once; the old lease is beaten no more and its id is never sent again (but in a retry of this same change), and its
+// queue is stopped, so a later write of the old card is only put in the stash under the old lease. null: the answer
+// does not name the lease and the horse that were asked for (the change is then not taken up).
+function adoptLease(run, reply, pick) {
+  const lower = (x) => (typeof x === 'string' ? x.toLowerCase() : x);
+  const isNew = reply.new_horse === true;
+  if (isNew !== (pick.newHorse === true)) return null;
+  if (!isNew && lower(reply.horse_id) !== lower(pick.horseId)) return null;
+  const view = leaseView(handoff, { lease_id: lower(reply.lease_id), horse_id: lower(reply.horse_id), horse_name: isNew ? '' : pick.name, new_horse: isNew, heartbeat_s: reply.heartbeat_s, expires_at: reply.expires_at, issued_at: Date.now() });
+  if (!view) return null;
+  const old = run.old;
+  const s = openSession(view, isNew ? '' : pick.name, null);
+  session = s;
+  saveQueue = null;
+  run.session = s;
+  sessions.finish(old);
+  // What the page knew of the old lease is the old lease's.
+  state.leaseTrouble = false;
+  state.leaseClosing = null;
+  showClosingNotice(null);
+  savesPaused = false;
+  lastQueuedSeq = null;
+  cardLook = null;
+  if (state.newHorse && state.newHorse.held && seatInput) seatInput.unholdWhenIdle('new-horse');
+  state.newHorse = null;
+  newCard = false;
+  state.hasCard = false;
+  s.lease.start();
+  return s;
+}
+// Step 5: the new lease's card, and its own save queue (seq from its checkout's last_seq + 1).
+async function checkoutSession(s) {
+  const r = await s.lease.checkout({ canRetry: () => !state.roomEnd });
+  if (!r.ok) return { ok: false, why: 'checkout refused' };
+  const c = readCheckout(r.body, s.view);
+  if (!c.ok) return { ok: false, why: c.why };
+  await stashOpen;
+  if (state.roomEnd || s !== session) return { ok: false, why: 'ended' };
+  // The name a save of this horse carries: the stable's own (the checkout's) when it has one, else the lobby's list's.
+  const own = typeof r.body.horse_name === 'string' ? r.body.horse_name.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64) : '';
+  if (!c.newHorse && own) s.view.horse_name = own;
+  saveQueue = makeQueue(s, c);
+  s.card = c.card ? c.card.slice() : null;
+  return { ok: true, card: c.card, newHorse: c.newHorse, lastSeq: c.lastSeq };
+}
+// Step 6: the new card into the reader (or an empty reader for a new horse; adopt: the card the game wrote stays and
+// is saved as the new horse's), under a new card generation that is the new lease's from before the board answers.
+async function readerSwap(s, co, pick) {
+  const gen = ++cardGen;
+  sessions.bind(gen, s);
+  const bytes = co.card ? co.card.buffer.slice(co.card.byteOffset, co.card.byteOffset + co.card.byteLength) : null;
+  const a = await boardCardSwap({ gen, bytes, adopt: co.newHorse === true && pick.adopt === true });
+  if (!a || a.ok !== true) {
+    sessions.bind(gen, null);
+    notePageError(`card not changed (${reportText(String(a && a.why ? a.why : 'no answer'), 60)})`);
+    return { ok: false, why: 'reader' };
+  }
+  newCard = co.newHorse === true;
+  state.hasCard = !newCard;
+  state.checkedOut = { lastSeq: co.lastSeq, ...(newCard ? { newHorse: true } : {}), gen };
+  state.newHorse = newCard ? { created: false, writes: 0, held: false, refused: null, name: null } : null;
+  // The new card is in the member's hand, not in the game, until Insert is pressed (or, for a new horse, the game
+  // writes it).
+  reader.in = false;
+  reader.empty = false;
+  // A card the game wrote on an empty reader that no lease owned (it made a new horse there by itself) is the new
+  // horse's first write.
+  const loose = newCard ? sessions.takeLoose() : null;
+  if (loose) roomCardWrite(gen, loose.bytes);
+  return { ok: true };
+}
+// Is the card in the game right now? The reader's own events say so (in since the insert button, or since the game
+// wrote a card; out at the game's eject). A card that went in and that the game never took up (its STATE is still
+// the attract screen's, 0, after CARD_IDLE_MS) does not count: the game is not using it.
+function cardInPlay() {
+  if (!reader.in) return false;
+  const st = state.board.counts.state;
+  return !(st === 0 && Date.now() - reader.inAt > CARD_IDLE_MS);
+}
+// The page takes the card out of the reader (an empty reader that no lease owns), and puts a lease's card back.
+async function emptyReader() {
+  const gen = ++cardGen;
+  sessions.bind(gen, null);
+  const a = await boardCardSwap({ gen, bytes: null });
+  if (!a || a.ok !== true) return false;
+  // (reader.in is left as it is: the card was out when this was asked, and an insert press the board saw just
+  // before it took the card out has said so meanwhile; cardCameOut then puts the card straight back.)
+  reader.empty = true;
+  return true;
+}
+// stillIn: the card is in the game after all (that late insert press): the file goes back under it and nothing is said.
+// quiet: nothing is said of the card (the panel's Leave seat: the seat's own end has the words).
+async function refillReader(s, { stillIn = false, quiet = false } = {}) {
+  const gen = ++cardGen;
+  sessions.bind(gen, s);
+  const bytes = s.card ? s.card.buffer.slice(s.card.byteOffset, s.card.byteOffset + s.card.byteLength) : null;
+  const a = await boardCardSwap({ gen, bytes });
+  if (state.roomEnd) return false;
+  if (!a || a.ok !== true) {
+    sessions.bind(gen, null);
+    notePageError(`card not put back (${reportText(String(a && a.why ? a.why : 'no answer'), 60)})`);
+    msg.textContent = READER_STUCK_TEXT;
+    return false;
+  }
+  reader.empty = false;
+  if (stillIn) return true;
+  reader.in = false;
+  if (s === session && !quiet) msg.textContent = s.card ? SWAP_TEXT.done(horseNow()) : SWAP_TEXT.doneNew;
+  return true;
+}
+// THE GAME'S OWN EJECT (the board's card-out, for the card of the lease held now): the game is done with this card.
+// Once its last save has landed, and where the lobby has another horse (or a new one) to offer, the page takes the
+// card out of the reader and asks "Which horse next?" by itself. The game's input is held from the eject until the
+// member has chosen (or until this gives up), so no button can put the card back in underneath it. Nothing is asked
+// of the room server until a horse is chosen. Where there is nothing to choose, nothing happens: the card stays in
+// the reader and the member plays on (or leaves) as before.
+async function cardCameOut(gen) {
+  if (!chooser || !seatCalls || cardOutBusy || state.roomEnd || swapRun || chooserAsking || chooser.isOpen() || state.otherHorse) return;
+  // Rev C only: the lab run that established the eject was Rev C's, and the lobby changes horses in Rev C rooms only.
+  if (handoff.release !== 'revc') return;
+  const s = session;
+  if (!s || sessions.owner(gen) !== s || !s.queue || !board || boardDead || state.phase !== 'seated' || newHorseWaiting()) return;
+  cardOutBusy = true;
+  if (seatInput) seatInput.hold('card-out', true);
+  const off = () => !!state.roomEnd || swapRun !== null || session !== s || state.otherHorse || chooser.isOpen() || state.phase !== 'seated';
+  let opened = false;
+  try {
+    // Its last save: landed, or this is not the moment (the queue's own notices say what is owed).
+    await s.queue.drain(SWAP_DRAIN_MS);
+    const q = s.queue.state();
+    if (off() || reader.in || q.pending + q.held > 0 || q.stopped) return;
+    const r = await askHorses('change');
+    if (off() || reader.in) return;
+    if (!r.view || !r.view.ok || !r.view.canSwap || !r.view.rows.some((x) => !x.disabled)) return; // nothing to choose
+    if (!(await emptyReader())) return;
+    // The card went back in under it (a press in the same frame): the card goes back in the reader, and nothing is asked.
+    if (off() || reader.in) { if (!state.roomEnd && session === s) await refillReader(s, { stillIn: reader.in }); return; }
+    msg.textContent = CARD_OUT_LEAD(horseNow());
+    chooser.open(r.view, CARD_OUT_LEAD(horseNow()), { focusKeep: true });
+    opened = true;
+  } catch (err) {
+    notePageError(`card out (${reportText(String(err && err.message ? err.message : err), 60)})`);
+  } finally {
+    cardOutBusy = false;
+    // The chooser holds the input itself while it is open.
+    if (seatInput) { if (opened) seatInput.hold('card-out', false); else seatInput.unholdWhenIdle('card-out'); }
+  }
+}
+// The calls of one change (room-seat-swap.js runHorseSwap).
+function swapDeps(run, pick) {
+  const old = run.old;
+  return {
+    onStep: (name) => { run.step = name; if (state.swap) state.swap.step = name; },
+    // The seat's own end, or a leave under way (the room's eject ask, the unload): the change stops at its next step.
+    ended: () => !!state.roomEnd || state.phase === 'leaving' || state.phase === 'ejecting' || state.phase === 'left' || state.phase === 'dropped',
+    wait: (ms) => new Promise((res) => setTimeout(res, ms)),
+    cardOut: () => oldCardOut(old),
+    hold: () => seatCalls.room('hold'),
+    releaseHold: () => seatCalls.room('release-hold'),
+    // THE SAME REQUEST every time (the lobby's retry rule): the OLD lease id, and the horse or new_horse asked for.
+    lobbySwap: () => seatCalls.lobby({ action: 'swap', lease_id: old.view.lease_id, ...(pick.newHorse ? { new_horse: true } : { horse_id: pick.horseId }) }),
+    // Is the old lease still live? Its own beat's end says no; else the lobby's horses answer for it does.
+    oldLeaseLive: async () => {
+      if (run.oldEnd) return false;
+      const a = await seatCalls.lobby({ action: 'horses', lease_id: old.view.lease_id });
+      if (a && !a.network && a.status >= 200 && a.status < 300) return true;
+      if (a && !a.network && (a.status === 410 || a.status === 404)) return false;
+      return run.oldEnd ? false : null;
+    },
+    adopt: (reply) => adoptLease(run, reply, pick),
+    checkout: (s) => checkoutSession(s),
+    cardSwap: (s, co) => readerSwap(s, co, pick),
+    rebind: (ticket) => seatCalls.room('rebind', { ticket }),
+    // The ticket's exp is the servers' clock, in seconds.
+    ticketLive: (expS) => Number.isFinite(expS) && serverNow(handoff, Date.now()) < expS * 1000 - TICKET_MARGIN_MS,
+    abandon: (s) => abandonLease(s),
+  };
+}
+// A lease the lobby opened for a change that this seat cannot finish (its card could not be had, the room server
+// would not bind it, or the page is going away mid change): closed at once (seat-lease.js close, kept alive past an
+// unload), so the horse is free. It never has a race: the station is on hold until the rebind.
+function abandonLease(s) {
+  return s.lease.close().then((r) => { state.swapClose = r; return r; }, () => null);
+}
+// A horse was chosen: the change runs (the panel stays up, its choices off, saying so), and then exactly one of:
+//   done     the panel closes: "[B] is in your hand. Press Insert card to put it in." (or the new horse's line)
+//   kept     nothing changed: the sender's words in the panel, the choices back (another horse, or Keep)
+//   leave    the seat has no usable lease: it ends, with words that say so and the link back
+//   aborted  the seat ended meanwhile: its own end path has it
+async function changeTo(pick) {
+  if (swapRun || state.roomEnd || !chooser || !seatCalls || !pick) return;
+  // The card's file is changed only while the card is OUT of the game (the one exception changes no file: the
+  // other horse's "New horse", which keeps the card the game wrote).
+  if (!pick.adopt && cardInPlay()) { chooser.fail(SWAP_TEXT.cardIn(horseNow())); return; }
+  const run = { old: session, session: null, step: null, oldEnd: null, newEnd: null };
+  const other = state.otherHorse && state.otherHorse.offer === 'open' ? state.otherHorse : null;
+  swapRun = run;
+  state.swap = { to: pick.newHorse ? 'new' : 'horse', step: null, outcome: null, code: null, steps: [] };
+  chooser.busy(SWAP_TEXT.working(pick.name));
+  leaveBtn.disabled = true; // a Leave waits for the change (it is over in seconds; the room's own eject still ends the seat)
+  let r = null;
+  try { r = await runHorseSwap(pick, swapDeps(run, pick)); } catch (err) {
+    notePageError(`horse change threw (${reportText(String(err && err.message ? err.message : err), 60)})`);
+    r = run.session ? { outcome: 'leave', code: 'threw', words: SWAP_TEXT.failed(pick.name), steps: [] } : { outcome: 'kept', code: 'threw', words: SWAP_FALLBACK_TEXT, steps: [] };
+  }
+  swapRun = null;
+  state.swap = { ...state.swap, outcome: r.outcome, code: r.code || null, steps: r.steps };
+  const ending = !!state.roomEnd || state.phase === 'leaving' || state.phase === 'ejecting' || state.phase === 'left' || state.phase === 'dropped';
+  if (!ending) leaveBtn.disabled = false;
+  if (r.outcome === 'aborted' || state.roomEnd) { chooser.close(); return; }
+  if (r.outcome === 'kept') {
+    // The old lease really ended while the lobby was asked (its beat said so, and the change did not happen).
+    if (run.oldEnd) { chooser.close(); leaseEnded(run.oldEnd, run.old); return; }
+    chooser.fail(r.words || SWAP_FALLBACK_TEXT);
+    return;
+  }
+  if (r.outcome === 'leave') {
+    chooser.close();
+    notePageError(`horse change not finished (${reportText(String(r.code || 'refused'), 40)})`);
+    endRoomSeat('swap', BACK.say(r.words || SWAP_TEXT.lost), 0);
+    return;
+  }
+  // Done: the station is bound to the new lease and its card is in the reader.
+  state.changes = (state.changes || 0) + 1;
+  if (other && state.otherHorse === other) { state.otherHorse = null; if (seatInput) seatInput.unholdWhenIdle('other-horse'); }
+  chooser.close();
+  if (run.newEnd) { leaseEnded(run.newEnd, session); return; }
+  // (A new horse whose card the game already wrote: its save is on its way, and its own line may be up already.)
+  if (!(r.newHorse && state.newHorse && state.newHorse.writes > 0)) msg.textContent = r.newHorse ? (pick.adopt ? SWAP_TEXT.doneAdopt : SWAP_TEXT.doneNew) : SWAP_TEXT.done(pick.name);
+  sendReport(true);
 }
 // The link worker is gone (onerror, then silence): its clock went with it.
 function linkDead() {
@@ -1127,7 +2028,7 @@ function freeBoard() {
 // A same-origin link back, after the message (one link, moved if shown again).
 function showWayBack(path) {
   if (typeof document.createElement !== 'function' || typeof msg.append !== 'function') return;
-  if (!wayBack) { wayBack = document.createElement('a'); wayBack.textContent = 'Back to the rooms'; }
+  if (!wayBack) { wayBack = document.createElement('a'); wayBack.textContent = BACK.link; }
   wayBack.href = path;
   msg.append(' ', wayBack);
 }
@@ -1138,12 +2039,21 @@ function showWayBack(path) {
 function offerEnded() {
   if (handoff) setTimeout(() => endRoomSeat('refused', null, RETURN_NOTICE_MS), 0);
 }
-function leaseEnded(info) {
+function leaseEnded(info, s) {
+  // The end of a lease the seat no longer holds is the horse change's own doing (the lobby ended it 'replaced').
+  if (s && s !== session) return;
+  // During a horse change (changeTo): the old lease's end while the lobby is being asked may BE the change (the lobby
+  // ended it and the reply is still on its way), and the new lease's end is the change's to handle (it closes what is
+  // left and ends the seat with its own words). Kept for the change; it applies them when it is over.
+  if (swapRun && s) {
+    if (s === swapRun.old && swapRun.step === 'lobby') { swapRun.oldEnd = info; return; }
+    if (s === swapRun.session) { swapRun.newEnd = info; return; }
+  }
   state.leaseEnd = info;
   // 402, 403 and the rest: the route's own message, for a moment. A bare
   // code (an answer with no message of its own) is not shown as words.
   const own = info.message && !/^[a-z_]{1,32}$/.test(info.message) ? info.message : null;
-  if (info.kind === 'refused') endRoomSeat('refused', own || 'The rooms refused this seat. Going back to the rooms.', RETURN_NOTICE_MS);
+  if (info.kind === 'refused') endRoomSeat('refused', own || `The rooms refused this seat. ${BACK.going}`, RETURN_NOTICE_MS);
   else if (info.kind === 'resting') endRoomSeat('resting', END_TEXT.resting, RETURN_NOTICE_MS);
   else endRoomSeat(info.kind, END_TEXT[info.kind] || END_TEXT.gone, 0);
 }
@@ -1161,15 +2071,22 @@ const leaveAsk = roomSeat ? document.getElementById('leave-confirm') : null;
 const controlsPanel = roomSeat && controlsBtn ? createControlsPanel({ win: window, doc: document, seatInput }) : null;
 if (controlsPanel) { controlsBtn.hidden = false; controlsBtn.addEventListener('click', () => controlsPanel.open()); }
 function toggleFullscreen() {
-  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  else if (stage && stage.requestFullscreen) stage.requestFullscreen().catch(() => {});
+  if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
+  // The touch layout puts its bar and its menu outside the stage's own picture: there the whole page goes full screen.
+  const el = touchLayout && document.documentElement && document.documentElement.requestFullscreen ? document.documentElement : stage;
+  if (el && el.requestFullscreen) el.requestFullscreen().catch(() => {});
 }
 if (roomSeat && fullBtn && stage && typeof stage.requestFullscreen === 'function') {
   fullBtn.hidden = false;
   fullBtn.addEventListener('click', toggleFullscreen);
   window.addEventListener('keydown', (e) => {
     if (e.code !== 'KeyF' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
-    if ((controlsPanel && controlsPanel.isOpen()) || (leaveAsk && !leaveAsk.hidden)) return;
+    if ((controlsPanel && controlsPanel.isOpen()) || (leaveAsk && !leaveAsk.hidden) || (chooser && chooser.isOpen())) return;
+    // Not while a report is being written: an "f" of the note typed a moment late must not turn the page full screen.
+    if (reportSheet && reportSheet.isOpen()) return;
+    // Nor in the page's first seconds: a member who was still typing on the lobby when it moved here (a report's note)
+    // must not find the seat full screen for it.
+    if (performance.now() < TYPED_AHEAD_MS) return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     e.preventDefault();
@@ -1191,11 +2108,36 @@ if (leaveAsk) {
   leaveAsk.addEventListener('click', (e) => { if (e.target === leaveAsk) closeLeaveAsk(); });
 }
 leaveBtn.addEventListener('click', askLeave);
+// CHANGE HORSE, the room seat only: the panel (mp-seat.html #horse-ask, room-seat-chooser.js) and the calls a change
+// makes (room-seat-net.js). While the panel is open every game input is held, as for the menu and the Controls panel.
+// A page without the panel, or one where it cannot start, has no Change horse button and plays exactly as before.
+if (roomSeat && handoff && changeBtn) {
+  try {
+    seatCalls = createSeatCalls({ handoff });
+    chooser = createHorseChooser({
+      doc: document, root: document.getElementById('horse-ask'), onPick: (p) => { changeTo(p); }, onKeep: chooserKeep, onLeave: chooserLeave, onLeaveSeat: () => { chooserLeaveSeat(); },
+      onOpen: () => { if (seatInput) seatInput.hold('chooser', true); }, onClose: () => { if (seatInput) seatInput.unholdWhenIdle('chooser'); },
+    });
+  } catch (err) {
+    chooser = null;
+    notePageError(`horse chooser not started (${String(err && err.message ? err.message : err).slice(0, 60)})`);
+  }
+  if (!chooser) seatCalls = null;
+  else if (typeof changeBtn.addEventListener === 'function') changeBtn.addEventListener('click', () => { askChangeHorse(); if (typeof changeBtn.blur === 'function') changeBtn.blur(); });
+  // The page is going away in the middle of a change (a reload, a closed tab): the lease the lobby has just opened
+  // is closed on the way out (it has no race: the station is on hold), so the horse is free at once instead of
+  // waiting out its lease. The room takes the station back when the seat's link drops, hold and all.
+  if (chooser && typeof window.addEventListener === 'function') window.addEventListener('pagehide', () => { if (swapRun && swapRun.session && !state.roomEnd) abandonLease(swapRun.session); });
+}
 // Option A step 2, the room seat only: the room's main screen (both halves of the race screen, published once per room
 // by the room, room-main-view.js) on top, the player's own board below, as the cabinet seat lays out its mains and its
 // satellite. Read only, from the room host this seat signals to. A view that cannot start never stops the seat.
 const mainVideo = document.getElementById('main');
+// The sound path, now: before the main view asks for its stream, and a minute or three before the board starts. Not on
+// a room seat page with no hand-off (it is on its way back to the rooms).
+if (!roomSeat || handoff) startSeatAudio();
 function fitMain() {
+  if (touchLayout) return; // the touch layout places both pictures itself
   if (!mainVideo || mainVideo.hidden) return;
   const full = !!document.fullscreenElement;
   const top = full ? 0 : Math.max(0, stage.getBoundingClientRect().top + window.scrollY);
@@ -1210,13 +2152,16 @@ if (roomSeat && mainVideo && stage && handoff && metas.expect && mainViewSupport
   const whep = mainWhepUrl(metas.expect.signalHost, handoff.room_tag);
   if (whep) {
     try {
-      mainView = createMainView({ video: mainVideo, whepUrl: whep, iceServers: () => mainViewIceServers(handoff, Date.now()) });
+      // The main cabinet's sound comes with the picture and is played by the page's sound (room-seat-audio.js: its own
+      // level and mute beside the seat's, from the moment it arrives, board or no board); the video element itself stays muted.
+      mainView = createMainView({ video: mainVideo, whepUrl: whep, iceServers: () => mainViewIceServers(handoff, Date.now()), onAudio: (s) => { mainSound = s; if (seatAudio) seatAudio.setMain(s); } });
       mainVideo.hidden = false;
       if (document.body && document.body.classList) document.body.classList.add('main-on');
       fitMain();
       window.addEventListener('resize', fitMain);
       document.addEventListener('fullscreenchange', () => setTimeout(fitMain, 50));
       mainView.start();
+      window.seat.mainView = () => (mainView ? mainView.state() : null); // counts only: attempts, what each offer carried, the last error
     } catch (err) {
       mainView = null;
       mainVideo.hidden = true;
@@ -1224,6 +2169,77 @@ if (roomSeat && mainVideo && stage && handoff && metas.expect && mainViewSupport
       notePageError(`main view not started (${String(err && err.message ? err.message : err).slice(0, 60)})`);
     }
   }
+}
+// The phone and tablet layout (docs/seat-phone-layout.md), the room seat only, on a device whose main pointer is a
+// finger; a desktop is laid out exactly as before. room-seat-layout.js works the rectangles out (the bar, the main
+// screen, the player's own screen, the nine buttons, all inside the safe area); this writes them to the stage as CSS
+// variables, ONCE per resize, turn of the device, full screen change or change of what is shown (never per frame),
+// and tells the pad. The header becomes a menu (the Menu button), which holds every game input while it is open.
+const menuBtn = document.getElementById('menu-btn');
+const menuClose = document.getElementById('menu-close');
+const barMsg = document.getElementById('bar-msg');
+const barLeave = document.getElementById('bar-leave');
+const hapticBtn = document.getElementById('haptic');
+const touchPage = roomSeat && !!handoff && !!stage && !!stage.style && typeof stage.style.setProperty === 'function' && !!document.body && !!document.body.classList;
+const haptics = touchPage ? createHaptics({ win: window }) : null;
+let layoutKey = '';
+let varNames = [];
+// Sideways, which picture is the large one: the player's own screen (the one with text to read) unless the player
+// tapped the main screen to swap them (room-seat-layout.js large). For this visit only; nothing is stored.
+let bigPicture = 'screen';
+function menuOpen() { return touchPage && document.body.classList.contains('menu-open'); }
+function setMenu(open) {
+  if (!touchPage || menuOpen() === !!open) return;
+  document.body.classList.toggle('menu-open', !!open);
+  if (menuBtn && typeof menuBtn.setAttribute === 'function') menuBtn.setAttribute('aria-expanded', String(!!open));
+  // A touch on the menu never reaches the game; a button resting when it closes does not either.
+  if (seatInput) { if (open) seatInput.hold('menu', true); else seatInput.unholdWhenIdle('menu'); }
+  const to = open ? menuClose : menuBtn;
+  if (to && typeof to.focus === 'function') to.focus();
+}
+function applyTouchLayout() {
+  if (!touchPage) return;
+  const root = document.documentElement;
+  const want = touchLayoutWanted({ roomSeat: true, coarse: coarsePointer(window), vw: window.innerWidth, vh: window.innerHeight });
+  if (!want) {
+    if (!touchLayout) return;
+    touchLayout = null; layoutKey = '';
+    setMenu(false);
+    for (const c of ['touch', 'land', 'port']) { document.body.classList.remove(c); if (root && root.classList) root.classList.remove(c); }
+    for (const n of varNames) stage.style.removeProperty(n);
+    varNames = [];
+    paintHaptic();
+    fitMain();
+    if (seatPad) seatPad.relayout();
+    return;
+  }
+  const L = seatLayout({
+    vw: window.innerWidth, vh: window.innerHeight, insets: readInsets(document.getElementById('safe-probe'), window.getComputedStyle),
+    main: !!(mainVideo && !mainVideo.hidden), pad: !!(seatPad && seatPad.shown()), large: bigPicture,
+  });
+  const vars = layoutVars(L);
+  const key = `${L.mode}|${JSON.stringify(vars)}|${L.small}|${L.arrangement}`;
+  if (key === layoutKey) return;
+  layoutKey = key;
+  touchLayout = L;
+  for (const el of [document.body, root]) {
+    if (!el || !el.classList) continue;
+    el.classList.add('touch');
+    el.classList.toggle('land', L.mode === 'landscape');
+    el.classList.toggle('port', L.mode === 'portrait');
+  }
+  for (const n of varNames) if (!(n in vars)) stage.style.removeProperty(n);
+  for (const [n, v] of Object.entries(vars)) stage.style.setProperty(n, v);
+  varNames = Object.keys(vars);
+  paintHaptic();
+  if (seatPad) seatPad.relayout();
+}
+function paintHaptic() {
+  if (!hapticBtn || !haptics) return;
+  // Only where there are on-screen buttons to feel: the touch layout, on a device that can buzz.
+  hapticBtn.hidden = !(haptics.supported && touchLayout);
+  hapticBtn.textContent = haptics.on() ? 'Buzz on Whip and Hold: on' : 'Buzz on Whip and Hold: off';
+  if (typeof hapticBtn.setAttribute === 'function') hapticBtn.setAttribute('aria-pressed', String(haptics.on()));
 }
 // Batch 1 step 4, the room seat only: the on-screen buttons (room-seat-pad.js, the cabinet seat's touch pad with its
 // stored layout), shown per the player's "On-screen buttons" choice in the Controls panel (auto: a touch screen), with
@@ -1240,6 +2256,7 @@ function padButtons() {
   padBtn.setAttribute('aria-pressed', String(seatPad.shown()));
   arrangeBtn.hidden = !seatPad.shown();
   arrangeBtn.textContent = seatPad.arranging() ? 'Done arranging' : 'Arrange buttons';
+  applyTouchLayout(); // the buttons shown or hidden: the pictures take or give their room
 }
 function padArrange(on) {
   if (!seatInput) return;
@@ -1254,6 +2271,9 @@ if (roomSeat && padBtn && arrangeBtn && stage && typeof stage.appendChild === 'f
       chrome: [document.querySelector('header'), noticeEl, mainVideo && !mainVideo.hidden ? mainVideo : null], lang: padLangFor(handoff && handoff.release),
       press: (a) => !!seatInput && seatInput.padPress(a), release: (a) => !!seatInput && seatInput.padRelease(a),
       releaseAll: () => { if (seatInput) seatInput.padReleaseAll(); }, onArrange: padArrange, onState: padButtons,
+      // On a phone or a tablet the buttons sit where the page's layout made room for them, and Whip and Hold buzz.
+      preset: () => (touchLayout && touchLayout.pads ? { slots: padPreset(touchLayout), headerBottom: touchLayout.bar ? touchLayout.bar.b : 0 } : null),
+      haptic: (a) => { if (haptics) haptics.pulse(a); },
     });
   } catch (err) {
     seatPad = null;
@@ -1263,6 +2283,112 @@ if (roomSeat && padBtn && arrangeBtn && stage && typeof stage.appendChild === 'f
     padButtons();
     padBtn.addEventListener('click', () => seatPad.toggle());
     arrangeBtn.addEventListener('click', () => seatPad.setArranging(!seatPad.arranging()));
+  }
+}
+
+// The touch layout, started (its functions are above the pad, which calls them).
+if (touchPage) {
+  try {
+    // The screen stays awake for the whole seat, the wait included (a phone sleeps in half a minute otherwise).
+    wakeLock = createWakeLock({ nav: window.navigator, doc: document });
+    wakeLock.start();
+    window.seat.wakeLock = () => (wakeLock ? wakeLock.state() : null);
+    window.seat.layout = () => touchLayout;
+    window.seat.haptics = () => (haptics ? haptics.state() : null);
+    applyTouchLayout();
+    window.addEventListener('resize', applyTouchLayout);
+    window.addEventListener('orientationchange', () => setTimeout(applyTouchLayout, 50));
+    document.addEventListener('fullscreenchange', () => setTimeout(applyTouchLayout, 50));
+    if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') window.visualViewport.addEventListener('resize', applyTouchLayout);
+    try { const mq = window.matchMedia('(pointer: coarse)'); if (mq && typeof mq.addEventListener === 'function') mq.addEventListener('change', applyTouchLayout); } catch { /* no media queries: no touch layout */ }
+    // The browser's own gestures stay off the play area (scroll, pull to refresh, the long press menu, zoom, text
+    // selection); the bar, the menu, the prompt and every panel keep them, so a player who needs to zoom still can.
+    guardPlayArea({ root: stage, isPlay: (t) => !!touchLayout && !(t && typeof t.closest === 'function' && t.closest('#menu-btn, #bar-leave, #bar-msg, #sound-ask, .padarrange')) });
+    if (menuBtn) menuBtn.addEventListener('click', () => setMenu(!menuOpen()));
+    if (menuClose) menuClose.addEventListener('click', () => setMenu(false));
+    if (barLeave) barLeave.addEventListener('click', () => askLeave());
+    // Sideways, one tap on the main screen swaps which picture is the large one (upright both are at the full width).
+    if (mainVideo && typeof mainVideo.addEventListener === 'function') mainVideo.addEventListener('click', () => {
+      if (!touchLayout || touchLayout.mode !== 'landscape') return;
+      bigPicture = bigPicture === 'screen' ? 'main' : 'screen';
+      applyTouchLayout();
+    });
+    // Whatever the menu starts (the leave check, the Controls panel, arranging the buttons) shows over the play area.
+    for (const b of [leaveBtn, controlsBtn, arrangeBtn, padBtn, fullBtn, changeBtn]) if (b && typeof b.addEventListener === 'function') b.addEventListener('click', () => setMenu(false));
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && menuOpen()) { e.preventDefault(); setMenu(false); } });
+    if (hapticBtn && haptics) { hapticBtn.addEventListener('click', () => { haptics.set(!haptics.on()); if (haptics.on()) haptics.pulse('whip'); paintHaptic(); }); paintHaptic(); }
+    // The status line, where the touch layout shows it (the bar upright, a strip over the main screen sideways).
+    if (barMsg && typeof MutationObserver === 'function') {
+      const copy = () => { if (barMsg.textContent !== msg.textContent) barMsg.textContent = msg.textContent; };
+      new MutationObserver(copy).observe(msg, { childList: true, characterData: true, subtree: true });
+      copy();
+    }
+  } catch (err) {
+    notePageError(`touch layout not started (${String(err && err.message ? err.message : err).slice(0, 60)})`);
+  }
+}
+
+// REPORT A PROBLEM (room-seat-report.js; docs/problem-reports.md), the room seat only: a button in the header (the
+// menu on a phone) opens a small panel with an optional one line note, Send and Cancel. The snapshot is taken when
+// the button is pressed: a small JPEG of the player's own picture, the figures of the status panel, the page's own
+// state and its last log lines. It goes to the lobby (POST /api/room/report, the hand-off's room token) only on Send.
+// No card bytes, no token, no ticket and no address are in it. While the panel is open every game input is held, as
+// under the page's other panels. The lab seat has no hand-off and no button.
+const linkRate = createRateMeter();
+const boardRate = createRateMeter();
+let reportSheet = null;
+function reportSnapshot() {
+  const id = newReportId();
+  const at = Date.now();
+  const guard = (f, d = null) => { try { return f(); } catch { return d; } };
+  const stats = guard(() => seatStats({ state, rates: { link: linkRate.rate(), board: boardRate.rate() } }), {});
+  const seatNow = guard(() => seatState({ state, extra: {
+    link_open: linkOpen, started, board_dead: boardDead, card_gen: cardGen, board_gen: boardGen, new_card: newCard, eject_out: ejectOut,
+    input_held: seatInput ? seatInput.held() : null, reader: { in: reader.in, outs: reader.outs, empty: reader.empty },
+    saves_hold: savesHold, saves_paused: savesPaused, saves_owed: guard(() => allOwed()),
+    lease: lease ? { state: guard(() => lease.state()), trouble: guard(() => lease.trouble()), time_left_ms: guard(() => Math.round(lease.timeLeft())), ...guard(() => reportFacts(lease.stats, { depth: 0 }), {}) } : null,
+    swap_running: !!swapRun, chooser_asking: chooserAsking,
+    touch: touchLayout ? touchLayout.mode : null, pad_shown: seatPad ? seatPad.shown() : null, menu_open: menuOpen(), main_on: !!(mainVideo && !mainVideo.hidden),
+    status_line: msg.textContent, notice: noticeEl && !noticeEl.hidden ? noticeEl.textContent : null, end_why: endWhy,
+    page_errors: pageErrors.count, last_error: pageErrors.last, file_source: fileSource,
+  } }), {});
+  const device = guard(() => deviceFacts({ win: window, nav: navigator, doc: document }), {});
+  const lines = [...seatLog.lines(), ...boardLog.lines()].sort((a, b) => a.t - b.t);
+  const view = session ? session.view : handoff;
+  const races = guard(() => state.board.counts.races);
+  const picture = capturePicture({ canvas: document.getElementById('screen'), doc: document });
+  return {
+    picture,
+    build: ({ note, picture: pic, pictureNote }) => buildSeatReport({
+      id, now: at, note, handoff, view, stats, state: seatNow, device, log: lines, logDropped: seatLog.dropped() + boardLog.dropped(),
+      raceNo: races, cardGen, pageBuild: metas.build, picture: pic, pictureNote,
+    }),
+  };
+}
+if (roomSeat && handoff) {
+  try {
+    const reportBtn = document.getElementById('report');
+    const reportAsk = document.getElementById('report-ask');
+    const sender = createReportSender({ handoff });
+    if (reportBtn && reportAsk && sender.ready && typeof reportBtn.addEventListener === 'function') {
+      const el = (id) => document.getElementById(id);
+      // The menu closes first (a phone), then the panel opens over the play area.
+      reportBtn.addEventListener('click', () => setMenu(false));
+      reportSheet = createReportSheet({
+        els: { button: reportBtn, dialog: reportAsk, title: el('report-q'), lead: el('report-lead'), label: el('report-note-label'), note: el('report-note'), status: el('report-status'), send: el('report-send'), cancel: el('report-cancel') },
+        copy: reportCopy('en'),
+        snapshot: reportSnapshot,
+        send: (r) => sender.send(r),
+        hold: (on) => { if (!seatInput) return; if (on) seatInput.hold('report', true); else seatInput.unholdWhenIdle('report'); },
+        onDone: (r) => seatLog.add('report', `${r.outcome}${r.status ? ` (${r.status})` : ''}`),
+      });
+      reportBtn.hidden = false;
+      window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && reportSheet && reportSheet.isOpen() && !reportSheet.busy()) { e.preventDefault(); reportSheet.close(); } });
+      // For the page's own tests and the lab: the report as it would be sent now, without its picture. Sends nothing.
+      window.seat.reportPreview = () => reportSnapshot().build({ note: '', picture: null, pictureNote: 'preview' });
+    }
+  } catch (err) {
+    notePageError(`report not started (${String(err && err.message ? err.message : err).slice(0, 60)})`);
   }
 }
 
@@ -1279,6 +2405,7 @@ function sendReport(force = false) {
 }
 setInterval(() => {
   if (!started || state.phase === 'left' || state.phase === 'dropped' || state.phase === 'refused') return;
+  cardNowIn();
   if (autoLeave && (state.phase === 'linking' || state.phase === 'seated') && autoLeave.step({ races: state.board.counts.races, cardWrites: state.cardWrites, now: Date.now() })) seatLeave.leave('finish');
   if (state.phase !== 'leaving') sendReport();
 }, 1000);
@@ -1296,11 +2423,15 @@ try {
     const paint = () => { try { paintCard(); } catch { /* the card is a nicety: it never stops the seat */ } };
     const paintCard = () => {
       const c = ended() ? null : seatWaitCard({ phase: state.phase, linkOpen, warm: state.warm === true, waitedS: (performance.now() - stepAt) / 1000, mainOn: !!(mainVideo && !mainVideo.hidden) });
+      // Racing: the station is the player's and nothing is over their screen (the touch layout hides its status strip then).
+      if (document.body && document.body.classList) { const racing = !c && state.phase === 'seated'; if (document.body.classList.contains('racing') !== racing) document.body.classList.toggle('racing', racing); }
       if (!c) { if (!waitEl.hidden) waitEl.hidden = true; return; }
       if (c.step !== step) { step = c.step; stepAt = performance.now(); }
-      // Over the picture exactly, wherever the layout has put it.
+      // Over the picture exactly, wherever the layout has put it (the touch layout says where: its own variables).
+      if (touchLayout) { for (const p of ['left', 'top', 'width', 'height']) if (waitEl.style[p]) waitEl.style[p] = ''; } else {
       waitEl.style.left = `${screenEl.offsetLeft}px`; waitEl.style.top = `${screenEl.offsetTop}px`;
       waitEl.style.width = `${screenEl.offsetWidth}px`; waitEl.style.height = `${screenEl.offsetHeight}px`;
+      }
       if (titleEl.textContent !== c.title) titleEl.textContent = c.title;
       if (textEl.textContent !== c.text) textEl.textContent = c.text;
       bars.forEach((b, i) => { b.className = i + 1 < c.step ? 'done' : i + 1 === c.step ? 'now' : ''; });
@@ -1314,10 +2445,35 @@ try {
   }
 } catch { /* no card on this page */ }
 
+// What the page's own log keeps of the seat (room-seat-report.js): a line whenever one of these changes. The two
+// rates behind the report's frame rate are read here too (the link's releases and the board's frames, a second).
+const logSeen = {};
+function logChanges(smp) {
+  const now = performance.now();
+  if (state.link && Number.isFinite(state.link.released)) linkRate.note(now, state.link.released);
+  if (smp && Number.isFinite(smp.f)) boardRate.note(now, smp.f);
+  const b = state.board;
+  const c = b.counts || {};
+  const seen = {
+    phase: `${state.phase}${state.refused ? ` (${state.refused})` : ''}`,
+    link: `${linkOpen ? 'open' : 'closed'}${state.gone ? ` gone (${state.goneReason || ''})` : ''}`,
+    lease: state.leaseTrouble ? 'trouble' : 'ok',
+    reconnects: String(state.reconnects || 0),
+    races: String(c.races ?? 0),
+    entered: String(c.entered === true),
+    swap: state.swap ? `${state.swap.to || ''} ${state.swap.step || ''} ${state.swap.outcome || ''} ${state.swap.code || ''}` : '',
+    saves: state.saves ? `pending ${state.saves.pending} held ${state.saves.held} stopped ${state.saves.stopped}` : '',
+    boarderr: b.errors.length ? `${b.errors.length}: ${b.errors[b.errors.length - 1]}` : '',
+    msg: msg.textContent || '',
+    notice: noticeEl && !noticeEl.hidden ? noticeEl.textContent || '' : '',
+  };
+  for (const [k, v] of Object.entries(seen)) { if (logSeen[k] === v) continue; const first = !(k in logSeen); logSeen[k] = v; if (v || !first) seatLog.add(k, v || '(none)'); }
+}
 setInterval(() => {
   const st = state.board;
   const smp = st.samples.length ? st.samples[st.samples.length - 1] : null;
   const l = state.link;
+  try { logChanges(smp); } catch { /* the log never stops the page */ }
   statusEl.textContent = [`phase ${state.phase}${state.refused ? ` (${state.refused})` : ''}`,
     smp ? `board f ${smp.f} comm2 ${smp.status.comm2}` : 'board -',
     l ? `link up ${l.upSent} down ${l.downDelivered} released ${l.released} not at barrier ${l.notAtBarrier}` : 'link -',

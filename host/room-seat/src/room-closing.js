@@ -150,3 +150,45 @@ export function closingNoticeText(c, fmt = (ms) => new Date(ms).toLocaleTimeStri
   if (c.ejectAfterRace) return 'This is your last race on this seat. Your card comes out and is saved after it.';
   return '';
 }
+
+// THE ROOM RESTART (the community pilot, 2026-11-24; approved by John R Reeves III, MHA). A room whose master board
+// is stuck at a race build is restarted by the room server (mp-room.js hang watchdog, tools/room-server/manager.mjs).
+// Before the room stops its hub it tells every seat, through the control message a seat already takes (T.eject, with
+// this reason in place of 'closing'), so the seat page can say so at once, save what it still owes on its live
+// lease, and go back to its return_path with a one-shot note for the lobby. The seat closes NO lease for this: a
+// seat's own close is 'seat_closed' (a leave), and the no-fault endings are the room server's alone. The room page
+// marks each told seat as ended by the room (mp-room-return.js markRoomEnd, why room_restart), and the room server
+// closes its lease 'server_closed' after any owed 'server_lost' (doc-arcade docs/rooms/mid-race-leave.md: no fault,
+// no rest, and a race with still no result is void).
+export const ROOM_RESTART_REASON = 'restarting';
+// The seats are told this long before the hub stops (their save queues post in that time).
+export const ROOM_RESTART_NOTICE_MS = 5000;
+// The build hang with no station changed: the restart is asked this long after the hang was seen (the hang dump's
+// second sample is 5 s after it, its answers at most 3 s more).
+export const HANG_FAST_RESTART_MS = 20000;
+export const ROOM_RESTART_TEXT = 'The room is restarting. Your horse is safe. You will go back to the lobby in a moment; join again in about a minute.';
+// The note for the lobby (doc-arcade lib/roomSeatHandoff takeRoomRestartNote): the time it was set, in sessionStorage
+// (per tab, same origin, never a URL), read once and removed there. The lobby's words for it: "The room restarted.
+// Your horse is as it was after its last saved race. You can join again now."
+export const ROOM_RESTART_NOTE_KEY = 'doc.roomRestartNote';
+export function markRoomRestartNote(now = Date.now(), storage = (() => { try { return globalThis.sessionStorage || null; } catch { return null; } })()) {
+  if (!storage) return false;
+  try { storage.setItem(ROOM_RESTART_NOTE_KEY, String(now)); return true; } catch { return false; }
+}
+// Did a station change boards around this build? The filler reboots of the hang watchdog (its steps 1 and 2) were
+// made for that case only; with no change they have never freed a stuck master (0 of 4 on the live room), so the
+// room goes to its restart. slots: the room's stations ({ slot, owner, returnedMs, takenAt }); buildAt and
+// nowPerf on the page clock (performance.now), nowWall the wall clock (takenAt is wall time). Returns the station
+// numbers that changed (an empty list: none).
+const HANG_CHANGING_OWNERS = new Set(['returning', 'opening', 'connecting', 'handing', 'broken']);
+export function hangChangedStations(slots, { buildAt, nowPerf, nowWall, recentMs }) {
+  const buildWall = nowWall - (nowPerf - buildAt);
+  const out = [];
+  for (const x of slots) {
+    const changed = HANG_CHANGING_OWNERS.has(x.owner)
+      || (Number.isFinite(x.returnedMs) && buildAt - x.returnedMs < recentMs)
+      || (Number.isFinite(x.takenAt) && x.takenAt > 0 && buildWall - x.takenAt < recentMs);
+    if (changed) out.push(x.slot);
+  }
+  return out;
+}

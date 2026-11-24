@@ -271,7 +271,7 @@ export async function inflateRaw(data, expectedSize) {
   return out;
 }
 
-async function memberBytes(e) {
+export async function memberBytes(e) {
   if (e.method === 0) return e.data.slice();
   if (e.method === 8) return inflateRaw(e.data, e.usize);
   throw new EditionImageError('game zip uses a compression this page cannot read');

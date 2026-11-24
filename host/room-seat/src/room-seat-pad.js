@@ -18,12 +18,16 @@
 // called whenever the pad shows, hides, or starts or ends arranging, so the page can label its buttons.
 // The pad lives inside #stage, so it stays on screen in full screen, and lays itself out again on a resize, a turn
 // of the device, full screen, or a change in the header's height. No image assets: every face is CSS and inline SVG.
+// On a phone or a tablet the page lays itself out around the buttons (room-seat-layout.js) and hands their places in
+// (preset): those are then the default arrangement, kept in records of their own (layoutSlot), and the page calls
+// relayout() when they change. A press writes nothing to the page (the pressed look is the style sheet's :active, a
+// transform), so hammering Whip costs no layout; haptic(action), when given, is told of every press that went in.
 
 import {
   PAD_ACTIONS, PAD_STORAGE_KEY, ROOM_PAD_STORAGE_KEY, PAD_PER_DEFAULT, PAD_PER_MAX, PAD_PER_MIN, PAD_SCALE_DEFAULT, PAD_SCALE_MAX, PAD_SCALE_MIN,
   PAD_SCALE_STEP, PAD_STYLE_DEFAULT, PAD_OPACITY_MAX, PAD_OPACITY_MIN, PAD_OPACITY_STEP,
   padGeometry, orientationOf, clampLayout, clampSpot, clampPerScale, clampUserScale, clampOpacity, defaultLayout,
-  defaultOpacity, groupArrowsAroundOk, loadLayout, loadOpacity, loadPerScales, loadScale, loadStyle, opacityOf,
+  defaultOpacity, groupArrowsAroundOk, layoutSlot, loadLayout, loadOpacity, loadPerScales, loadScale, loadStyle, opacityOf,
   resetLayout, resetOpacity, saveLayout, saveOpacity, savePerScales, saveScale, saveStyle, sizeOf,
 } from './room-seat-pad-layout.js';
 
@@ -74,6 +78,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 export function createRoomSeatPad({
   doc = globalThis.document, win = globalThis.window, storage, parent, picture = null, chrome = [], lang = 'en',
   press = () => false, release = () => false, releaseAll = () => {}, onArrange = () => {}, onState = () => {},
+  preset = null, haptic = null,
 } = {}) {
   if (storage === undefined) { try { storage = win.localStorage; } catch { storage = null; } }
   const el = (tag, cls, text) => { const e = doc.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
@@ -135,7 +140,7 @@ export function createRoomSeatPad({
     try { b.setPointerCapture(e.pointerId); } catch { /* not capturable */ }
     if (pointers.has(e.pointerId)) return;
     pointers.set(e.pointerId, { action, mode: 'play' });
-    press(action);
+    if (press(action) && haptic) { try { haptic(action); } catch { /* no buzz */ } }
   }
   function up(e, cancelled) {
     const p = pointers.get(e.pointerId);
@@ -235,7 +240,7 @@ export function createRoomSeatPad({
   function snapArrows() { layout = groupArrowsAroundOk(layout, g, scale, per); paint(); }
   function chooseStyle(next) { style = next; saveStyle(storage, next); for (const a of PAD_ACTIONS) face(a); paint(); updatePanel(); }
   function restoreDefaults() {
-    resetLayout(storage, orient);
+    resetLayout(storage, layoutSlot(orient, g));
     resetOpacity(storage);
     opacity = defaultOpacity();
     scale = PAD_SCALE_DEFAULT;
@@ -377,7 +382,10 @@ export function createRoomSeatPad({
       const r = picture.getBoundingClientRect();
       if (r.width > 0 && r.height > 0) pic = { l: r.left, t: r.top, r: r.right, b: r.bottom };
     }
-    return padGeometry(vw, vh, { picture: pic, headerBottom, fullscreen });
+    // The touch layout: the page says where the buttons go and where its bar ends.
+    let slots = null;
+    try { const p = typeof preset === 'function' ? preset() : null; if (p && p.slots) { slots = p.slots; if (typeof p.headerBottom === 'number') return padGeometry(vw, vh, { picture: pic, headerBottom: p.headerBottom, fullscreen: false, preset: slots }); } } catch { slots = null; }
+    return padGeometry(vw, vh, { picture: pic, headerBottom, fullscreen, preset: slots });
   }
   function relayout() {
     if (!shown) return;
@@ -387,12 +395,13 @@ export function createRoomSeatPad({
       layout = clampLayout(layout, g, scale, per); // mid-arrange: keep what the player is doing
     } else {
       orient = o;
-      scale = loadScale(storage, o);
-      per = loadPerScales(storage, o);
+      const slot = layoutSlot(o, g);
+      scale = loadScale(storage, slot);
+      per = loadPerScales(storage, slot);
       const s = loadStyle(storage);
       if (s !== style) { style = s; for (const a of PAD_ACTIONS) face(a); }
       opacity = loadOpacity(storage);
-      layout = clampLayout(loadLayout(storage, o, g, scale), g, scale, per);
+      layout = clampLayout(loadLayout(storage, slot, g, scale), g, scale, per);
     }
     paint();
     updatePanel();
@@ -416,9 +425,10 @@ export function createRoomSeatPad({
       cancelHold();
       drag = null;
       lifted = null;
-      if (layout) saveLayout(storage, orient, layout);
-      saveScale(storage, orient, scale);
-      savePerScales(storage, orient, per);
+      const slot = layoutSlot(orient, g);
+      if (layout) saveLayout(storage, slot, layout);
+      saveScale(storage, slot, scale);
+      savePerScales(storage, slot, per);
       saveOpacity(storage, opacity);
       sel = null;
       arranging = false;

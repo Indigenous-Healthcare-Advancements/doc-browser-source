@@ -28,11 +28,16 @@ import { EDITION_REGISTRY } from './editions.js';
 export const CORE_JS_FILE = 'flycast_libretro.js';
 export const CORE_WASM_FILE = 'flycast_libretro.wasm';
 
-/** The shipped core: doc-browser-source tag web-2026.11.05-1, commit b3e207a43. */
+/**
+ * The shipped core: Flycast commit b3e207a43 (the library of doc-browser-source tag web-2026.11.05-1, unchanged),
+ * linked with one more host shim export, shim_nvmem_copy (host/shim/linkbus_shim.cpp; scripts/BUILD.md, change note
+ * 2026-11-22), which copies the battery memory out for the room server (room-nvmem.js). The link before it, without
+ * that export, was js d7bd2e87... wasm 6b4022ed... (web-2026.11.05-1).
+ */
 export const SHIPPED_CORE = Object.freeze({
   core: 'b3e207a43',
-  js: 'd7bd2e87d2c5077ee551697e5c34824aa7a1f32b22161ce099fd0f197ffbb157',
-  wasm: '6b4022edb2096c5380e9b2c01cd2db3429f2e4951e58afeff51161ce079902bf',
+  js: 'a0b6f61ae6476b03f9ca7c34e8d6eab8e040b08dba62d3b8c4db57c9a2ce03f8',
+  wasm: '428cc0ccb66f64f56a834a5e34548d629fbabb693e8f0decd784ed66635e1be1',
   editions: Object.freeze(['A', 'B', 'J99']),
 });
 

@@ -23,9 +23,17 @@
 //   less clock_skew_ms): compare it with Date.now() as it is. ice_expires_at
 //   (and every other ISO time a server sends, such as closing_until) is the
 //   servers' clock: compare it with Date.now() + clock_skew_ms (serverNow).
+// - A REFUSED ENTRY'S PLACE IS GIVEN BACK (the test of 2026-11-24: the lobby had already reserved the seat and opened
+//   the lease, the seat page refused the entry and went back at once, and the place stayed reserved for ten
+//   minutes). A refusal names what to give back (refusedGiveBack: the reservation, and the lease with its room token
+//   when both are readable) when the entry names this page's own room server; the page then leaves the reservation
+//   and closes the lease before it goes back (room-seat-net.js giveBackRefusedSeat; a lease closed before its
+//   checkout costs nothing). An entry that names another room server, or a page with no metas, is not acted on
+//   here: the entry is left as it was under ROOM_SEAT_REFUSED_KEY for the lobby, which wrote it, knows its own room
+//   server and frees it on arrival (doc-arcade lib/roomSeatHandoff takeStrandedSeats, which removes it).
 // Stricter than roomSeatHandoff.ts in two places (the seat refuses what a2
 // would pass; a2 aligns in its 0b round): slot must be 1 to MAX_ROOM_SLOT
-// (what the room server hands out), and return_path must be /rooms or under
+// (what the room server hands out), and return_path must be /rooms, the lobby page "/" or under
 // /rooms/.
 
 import { isHostName } from './mp-public.js';
@@ -34,9 +42,24 @@ export const ROOM_SEAT_HANDOFF_KEY = 'doc.roomSeat';
 export const ROOM_SEAT_HANDOFF_VERSION = 1;
 export const ROOM_SEAT_PATH = '/room-seat';
 export const ROOMS_PATH = '/rooms';
+/** The lobby's own page: its browser room card joins a member in place and is the way back from that seat. */
+export const LOBBY_PATH = '/';
+/**
+ * The page's words for the way back, by the hand-off's return_path: "/" is the lobby, anything else (/rooms and
+ * under it) the rooms page. going: the line an end says; link: the link's text; say(text): a line written for the
+ * rooms page (room-seat-swap.js, room-closing.js) said for this way back. The lobby's own sentences ("the rooms
+ * page") are the sender's words and are never changed.
+ */
+export function wayBackWords(path) {
+  const place = path === LOBBY_PATH ? 'the lobby' : 'the rooms';
+  const say = (t) => (place === 'the rooms' || typeof t !== 'string' ? t : t.replace(/\b([Gg]o(?:ing)? back to) the rooms\b(?! page)/g, `$1 ${place}`));
+  return Object.freeze({ place, going: `Going back to ${place}.`, link: `Back to ${place}`, say });
+}
 /** The lease length (doc-arcade lib/roomCabinet ROOM_LEASE_S): an entry older than this is useless. */
 export const HANDOFF_MAX_AGE_MS = 120_000;
 export const ROOM_SEAT_REPLACE_KEY = 'doc.roomSeatReplace';
+/** A refused entry this page could not give back itself, left for the lobby to free on arrival (see the header). */
+export const ROOM_SEAT_REFUSED_KEY = 'doc.roomSeatRefused';
 /** The doc-build meta the room seat route injects (app/room-seat route.ts). */
 export const ROOM_SEAT_BUILD = 'room-seat';
 
@@ -56,10 +79,10 @@ export const MAX_ROOM_SLOT = 8;
 /** A room slot the room server can hand out: an integer from 1 to MAX_ROOM_SLOT. */
 export const isRoomSlot = (s) => Number.isSafeInteger(s) && s >= 1 && s <= MAX_ROOM_SLOT;
 
-/** A same-origin path: exactly ROOMS_PATH, or under ROOMS_PATH + "/" (and no backslash or control anywhere). */
+/** A same-origin path: exactly ROOMS_PATH, exactly LOBBY_PATH (the lobby's own page, whose room card seats a member in place), or under ROOMS_PATH + "/" (and no backslash or control anywhere). */
 export function safeReturnPath(p) {
   if (typeof p !== 'string' || !p) return false;
-  if (p === ROOMS_PATH) return true;
+  if (p === ROOMS_PATH || p === LOBBY_PATH) return true;
   if (p.length > 512 || !p.startsWith(`${ROOMS_PATH}/`)) return false;
   if (/\/(?:\.|%2e){1,2}(?=[/?#]|$)/i.test(p)) return false; // no dot segment climbs out of /rooms/
   for (const ch of p) { const c = ch.charCodeAt(0); if (c < 32 || c === 127 || ch === '\\') return false; }
@@ -92,7 +115,9 @@ export function validRoomSeatHandoff(h, now = Date.now(), expect) {
   if (!str('lease_id') || !UUID.test(x.lease_id) || !str('horse_id') || !UUID.test(x.horse_id)) return false;
   if (x.release !== 'doc99' && x.release !== 'revc') return false;
   if (!str('cabinet_id') || !str('lease_expires_at') || !str('rom') || typeof x.horse_name !== 'string') return false;
-  if (!str('room') || !str('room_tag') || !HEX_TAG.test(x.room_tag) || !str('reservation')) return false;
+  // A new horse (roomSeatHandoff.ts checklist item 6): new_horse is true or absent, never anything else.
+  if (x.new_horse !== undefined && x.new_horse !== true) return false;
+  if (!str('room')|| !str('room_tag') || !HEX_TAG.test(x.room_tag) || !str('reservation')) return false;
   if (!isRoomSlot(x.slot)) return false;
   if (!(typeof x.heartbeat_s === 'number' && x.heartbeat_s >= 5 && x.heartbeat_s <= 60)) return false;
   if (!str('signal_url') || !x.signal_url.startsWith('wss://')) return false;
@@ -110,13 +135,49 @@ export function validRoomSeatHandoff(h, now = Date.now(), expect) {
   return true;
 }
 
+/**
+ * A NEW HORSE's seat (the pilot stable; roomSeatHandoff.ts checklist item 6): the entry carries new_horse: true, its
+ * horse_id is the id the lobby made for the horse, and its horse_name is "" (the horse has no name yet). There is no
+ * card to load: the seat starts the game with an empty card slot and the member makes the horse in the game. An entry
+ * without new_horse is a horse with a card, exactly as before.
+ */
+export const isNewHorse = (h) => !!h && h.new_horse === true;
+/** What the page calls a horse that has no name yet (never the empty name). */
+export const NEW_HORSE_LABEL = 'New horse';
+/**
+ * The horse's name for the page: `name` (the name the lobby read from the saved card) when it has one, else the
+ * hand-off's, else NEW_HORSE_LABEL. Never an empty string, and no control characters.
+ */
+export function horseLabel(h, name = null) {
+  const clean = (s) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64) : '');
+  return clean(name) || clean(h && h.horse_name) || NEW_HORSE_LABEL;
+}
+
 const session = () => { try { return globalThis.sessionStorage || null; } catch { return null; } };
+
+// A room server reservation (manager.mjs RID): what /leave takes.
+const RESERVATION = /^[0-9a-f]{32}$/;
+const REFUSED_MAX_CHARS = 16384;
+/**
+ * What a REFUSED entry lets this page give back, or null. Only for an entry that names this page's own room server
+ * (expect, from the metas): { roomServerUrl, reservation, roomToken, leaseId }. roomToken and leaseId are both null
+ * when either is unreadable (the lease then runs out by itself, 120 s after its last beat).
+ */
+export function refusedGiveBack(h, expect) {
+  if (!h || typeof h !== 'object' || !expect || typeof expect.roomServerUrl !== 'string' || !expect.roomServerUrl.startsWith('https://')) return null;
+  if (h.room_server_url !== expect.roomServerUrl) return null;
+  if (typeof h.reservation !== 'string' || !RESERVATION.test(h.reservation)) return null;
+  const lease = typeof h.room_token === 'string' && TOKENISH.test(h.room_token) && typeof h.lease_id === 'string' && UUID.test(h.lease_id);
+  return { roomServerUrl: expect.roomServerUrl, reservation: h.reservation, roomToken: lease ? h.room_token : null, leaseId: lease ? h.lease_id : null };
+}
 
 /**
  * Read the hand-off and remove it at once (roomSeatHandoff.ts
  * takeRoomSeatHandoff). Returns
  *   { status: 'ok', handoff, returnPath }       a usable entry
- *   { status: 'invalid', handoff: null, returnPath }   an entry, refused
+ *   { status: 'invalid', handoff: null, returnPath, giveBack, stashed }   an entry, refused. giveBack: what the
+ *       page gives back before it goes (refusedGiveBack), or null; stashed: the entry was left for the lobby under
+ *       ROOM_SEAT_REFUSED_KEY instead (it names a reservation, and this page may not act on it)
  *   { status: 'none', handoff: null, returnPath }      no entry (or no storage)
  * returnPath is the entry's own return_path when it is a safe same-origin
  * path, else ROOMS_PATH. expect is required here: a seat page without its
@@ -133,7 +194,12 @@ export function takeRoomSeatHandoff({ storage = session(), now = Date.now(), exp
   try { h = JSON.parse(raw); } catch { h = null; }
   const back = h && typeof h === 'object' && safeReturnPath(h.return_path) ? h.return_path : ROOMS_PATH;
   if (!expect || !expect.roomServerUrl || !expect.signalHost || !validRoomSeatHandoff(h, now, expect)) {
-    return { status: 'invalid', handoff: null, returnPath: back };
+    const giveBack = refusedGiveBack(h, expect);
+    let stashed = false;
+    if (!giveBack && h && typeof h === 'object' && typeof h.reservation === 'string' && RESERVATION.test(h.reservation) && raw.length <= REFUSED_MAX_CHARS) {
+      try { storage.setItem(ROOM_SEAT_REFUSED_KEY, raw); stashed = true; } catch { /* storage off: the place runs out by itself */ }
+    }
+    return { status: 'invalid', handoff: null, returnPath: back, giveBack, stashed };
   }
   return { status: 'ok', handoff: h, returnPath: h.return_path };
 }
@@ -237,7 +303,8 @@ export function isReload(perf = globalThis.performance) {
 /**
  * The room seat page's intake, once at start-up: take the entry (removed in
  * the same step). A usable entry: { go: null, handoff }. Anything else:
- * { go: <path> }, the page goes there at once and starts nothing; with no
+ * { go: <path> }, the page goes there at once and starts nothing (a refused
+ * entry's place is given back first: giveBack, see takeRoomSeatHandoff); with no
  * entry on a reload of the page, the replace flag is set first so /rooms
  * provisions with { replace: true }. The seat no longer holds return_path
  * after its own reload (the entry is gone), so that way back is ROOMS_PATH.
@@ -246,5 +313,5 @@ export function roomSeatIntake({ storage = session(), now = Date.now(), expect =
   const t = takeRoomSeatHandoff({ storage, now, expect });
   if (t.status === 'ok') return { go: null, handoff: t.handoff, status: 'ok' };
   if (t.status === 'none' && reload) markRoomSeatReplace(now, storage);
-  return { go: t.returnPath, handoff: null, status: t.status, replace: t.status === 'none' && reload };
+  return { go: t.returnPath, handoff: null, status: t.status, replace: t.status === 'none' && reload, giveBack: t.giveBack ?? null };
 }
