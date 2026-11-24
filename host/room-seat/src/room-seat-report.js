@@ -465,6 +465,8 @@ export function createReportSheet({ els, copy = REPORT_COPY.en, snapshot, send, 
     text(e.cancel, copy.cancel);
     e.dialog.hidden = false;
     // No focus is taken: the game's keys go on working (a focused Send would also be pressed by the game's own keys).
+    // The button that opened the sheet does not keep it either after a pointer press (room-seat-input.js gives the
+    // focus back to the page), and the note field never has it until the member puts it there.
     return true;
   }
   async function submit() {

@@ -155,6 +155,14 @@ export function createInputState(options = {}) {
 // Wires DOM key events to an input state. Returns an unbind function.
 // Keys are released when the page loses focus, so nothing sticks down.
 // Typing in a text field (the feedback box) never reaches the game, and the field keeps its keys.
+// A page button that has the focus takes Enter and Space (pageButtonKey), unless the page says the game goes first
+// there (bindKeyboard's gameFirst).
+function pageButtonKey(e) {
+  const t = e.target;
+  if (!t || typeof t !== 'object') return false;
+  const tag = typeof t.tagName === 'string' ? t.tagName.toUpperCase() : '';
+  return (tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY') && (e.code === 'Enter' || e.code === 'Space' || e.code === 'NumpadEnter');
+}
 function isTyping(e) {
   const t = e.target;
   if (!t || typeof t !== 'object') return false;
@@ -167,9 +175,20 @@ function isTyping(e) {
   return tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && !['button', 'checkbox', 'radio', 'submit', 'reset', 'file', 'range', 'color'].includes(String(t.type || '').toLowerCase()));
 }
 
-export function bindKeyboard(target, state) {
-  const down = (e) => { if (isTyping(e)) return; if (state.onKey(e.code, true)) e.preventDefault(); };
-  const up = (e) => { if (state.onKey(e.code, false)) e.preventDefault(); };
+// gameFirst(e) (optional; the room seat, room-seat-input.js): true for a focused page button that must not keep a
+// GAME key for itself (the report sheet test of 2026-11-24: a member who had clicked a header button and then
+// pressed a game key that is also a button key, Enter or Space, pressed the button again and the game got nothing).
+// There a mapped key goes to the game and is not the button's; a key the game has no use for (not mapped, or the
+// input is suspended) is still the button's, so the page stays usable from the keyboard.
+export function bindKeyboard(target, state, { gameFirst = null } = {}) {
+  // The codes whose keydown went to the game: only their keyup is taken from the page (a Space that pressed a
+  // page button must keep its keyup, which is what activates the button).
+  const taken = new Set();
+  const down = (e) => {
+    if (isTyping(e) && !(gameFirst && pageButtonKey(e) && gameFirst(e))) return;
+    if (state.onKey(e.code, true)) { taken.add(e.code); e.preventDefault(); }
+  };
+  const up = (e) => { if (state.onKey(e.code, false) && (taken.delete(e.code) || !isTyping(e))) e.preventDefault(); };
   const blur = () => state.releaseAll();
   target.addEventListener('keydown', down);
   target.addEventListener('keyup', up);

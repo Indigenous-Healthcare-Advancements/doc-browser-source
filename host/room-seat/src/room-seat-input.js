@@ -37,6 +37,12 @@ export const SEAT_ACTION_IDS = Object.freeze({
   a: JOYPAD.B, b: JOYPAD.A, whip: JOYPAD.Y, card: JOYPAD.L, start: JOYPAD.START,
 });
 export const SEAT_RESERVED_KEYS = Object.freeze(new Set(['Escape', 'KeyF']));
+// The seat page's own buttons, outside every dialog (mp-seat.html): the header and its menu, the touch bar's two and
+// the sound prompt. A game key is never theirs, and a pointer press does not leave the focus on them
+// (createRoomSeatInput). SEAT_SHEET_BUTTONS: the report sheet's Send and Cancel, which give the focus back the same
+// way after a pointer press but keep Enter and Space (the sheet is used from the keyboard too).
+export const SEAT_PAGE_BUTTONS = '#seat-menu, #menu-btn, #bar-leave, #sound-ask';
+export const SEAT_SHEET_BUTTONS = '#report-row';
 const MAX_PAD_INDEX = 31;
 const CODE_RE = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
 const ACTIONS = Object.keys(SEAT_ACTION_IDS);
@@ -179,7 +185,28 @@ export function createRoomSeatInput({ win = globalThis.window, storage } = {}) {
     if (on) holds.add(String(reason)); else holds.delete(String(reason));
     applySuspend();
   }
-  const unbind = win && typeof win.addEventListener === 'function' ? bindKeyboard(win, input) : () => {};
+  // GAME KEYS AND THE PAGE'S OWN BUTTONS (the report sheet test of 2026-11-24). The seat's buttons (the header and
+  // its menu, the touch bar, the sound prompt: SEAT_PAGE_BUTTONS) never keep a game key: a mapped key pressed while
+  // one of them has the focus goes to the game, Enter and Space included, and does not press the button again. A
+  // dialog's buttons (the leave check, the chooser, the Controls panel) are not in that list and keep their keys,
+  // and so does any button while the input is suspended or for a key the game does not use.
+  const inPageButtons = (t) => { try { return !!(t && typeof t.closest === 'function' && t.closest(SEAT_PAGE_BUTTONS)); } catch { return false; } };
+  const unbind = win && typeof win.addEventListener === 'function' ? bindKeyboard(win, input, { gameFirst: (e) => inPageButtons(e && e.target) }) : () => {};
+  // And a seat button pressed with the mouse or a finger does not keep the focus (a keyboard press, detail 0, does:
+  // its user is walking the buttons). The focus goes back to the page, where every key is the game's. Whatever the
+  // click itself focused is let go too when it is another seat button (the menu's own), never a dialog's.
+  const doc = win && win.document ? win.document : null;
+  const onPageClick = (e) => {
+    const t = e && e.target;
+    if (!t || !(e.detail > 0) || typeof t.closest !== 'function') return;
+    let btn = null;
+    try { btn = t.closest('button'); } catch { btn = null; }
+    if (!btn || !(inPageButtons(btn) || (() => { try { return !!btn.closest(SEAT_SHEET_BUTTONS); } catch { return false; } })())) return;
+    for (const el of [btn, doc.activeElement]) {
+      if (el && el === doc.activeElement && typeof el.blur === 'function' && String(el.tagName || '').toUpperCase() === 'BUTTON' && (el === btn || inPageButtons(el))) { try { el.blur(); } catch { /* not focused */ } }
+    }
+  };
+  if (doc && typeof doc.addEventListener === 'function') doc.addEventListener('click', onPageClick);
   const release = () => input.releaseAll();
   const onVisibility = () => { if (win.document && win.document.visibilityState === 'hidden') release(); };
   if (win && typeof win.addEventListener === 'function') {
@@ -224,7 +251,7 @@ export function createRoomSeatInput({ win = globalThis.window, storage } = {}) {
       win.removeEventListener('blur', release);
       win.removeEventListener('visibilitychange', onVisibility);
       win.removeEventListener('storage', onStorage);
-      if (win.document && typeof win.document.removeEventListener === 'function') win.document.removeEventListener('visibilitychange', onVisibility);
+      if (win.document && typeof win.document.removeEventListener === 'function') { win.document.removeEventListener('visibilitychange', onVisibility); win.document.removeEventListener('click', onPageClick); }
     }
     input.releaseAll();
     clearInput(i32);

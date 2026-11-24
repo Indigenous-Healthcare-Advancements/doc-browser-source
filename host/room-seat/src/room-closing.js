@@ -185,6 +185,10 @@ export function markSeatEndNote(code, now = Date.now(), storage = (() => { try {
   if (!storage || !/^[a-z_]{1,24}$/.test(String(code))) return false;
   try { storage.setItem(SEAT_END_NOTE_KEY, `${code}:${Math.floor(now)}`); return true; } catch { return false; }
 }
+// THE ROOM WENT AWAY WHILE THE SEAT WAITED (2026-11-24): a seat page that was linked to its room but had no station
+// yet (choosing its game files, or waiting for the race in progress) when the room or the room server restarted.
+// Its note's code; the lobby's words: "The room restarted while you were waiting. You can join again now."
+export const SEAT_WAITING_END_CODE = 'waiting_restart';
 // Did a station change boards around this build? The filler reboots of the hang watchdog (its steps 1 and 2) were
 // made for that case only; with no change they have never freed a stuck master (0 of 4 on the live room), so the
 // room goes to its restart. slots: the room's stations ({ slot, owner, returnedMs, takenAt }); buildAt and
