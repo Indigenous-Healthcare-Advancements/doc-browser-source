@@ -5,7 +5,7 @@ Copyright (C) 2026 John R Reeves III. GPL-2.0-or-later.
 The page a player opens to take one seat in a shared room: the player's own
 game board runs in the player's browser and is linked to a room that runs the
 rest of the cabinet. This folder is the page exactly as it is served, copied
-from doc-web commit c1bdab3 (c1bdab38ba012d8551ba92337f30ba896b16cfae,
+from doc-web commit 93e501e (93e501e47fe185ea2c9726adf1f2ea5b1fd939c6,
 2026-11-24): the page and 54 modules. There is no build step; the modules are
 served as written.
 

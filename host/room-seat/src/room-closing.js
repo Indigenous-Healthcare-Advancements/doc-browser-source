@@ -175,6 +175,16 @@ export function markRoomRestartNote(now = Date.now(), storage = (() => { try { r
   if (!storage) return false;
   try { storage.setItem(ROOM_RESTART_NOTE_KEY, String(now)); return true; } catch { return false; }
 }
+// EVERY OTHER SEAT END (the first visit of 2026-11-24: a seat the room ended after 90 s went back to the lobby with its
+// words in the status line for four seconds, which nobody saw). The seat page leaves a one-shot note for its way
+// back at every end, the restart note's pattern: "<code>:<time>" in sessionStorage. The code names the end (the
+// page's own why, or 'files': no game files were chosen); the lobby has the words (doc-arcade lib/roomSeatHandoff
+// takeRoomSeatEndNote), and a code it does not know gets a plain line.
+export const SEAT_END_NOTE_KEY = 'doc.roomSeatEndNote';
+export function markSeatEndNote(code, now = Date.now(), storage = (() => { try { return globalThis.sessionStorage || null; } catch { return null; } })()) {
+  if (!storage || !/^[a-z_]{1,24}$/.test(String(code))) return false;
+  try { storage.setItem(SEAT_END_NOTE_KEY, `${code}:${Math.floor(now)}`); return true; } catch { return false; }
+}
 // Did a station change boards around this build? The filler reboots of the hang watchdog (its steps 1 and 2) were
 // made for that case only; with no change they have never freed a stuck master (0 of 4 on the live room), so the
 // room goes to its restart. slots: the room's stations ({ slot, owner, returnedMs, takenAt }); buildAt and

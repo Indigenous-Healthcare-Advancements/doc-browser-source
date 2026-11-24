@@ -482,6 +482,9 @@ export function createReportSheet({ els, copy = REPORT_COPY.en, snapshot, send, 
       r = await send(report);
     } catch { r = { outcome: 'failed', status: 0 }; }
     busy = false;
+    // The page is told first, with the words (2026-11-24: a sheet that had closed meanwhile said nothing at all, so
+    // a member could not tell the report went through; the page shows the line in its own status strip).
+    try { onDone(r, outcomeText(r.outcome, copy)); } catch { /* the page's */ }
     if (!isOpen()) return r;
     say(outcomeText(r.outcome, copy));
     if (r.outcome === 'sent') {
@@ -490,7 +493,6 @@ export function createReportSheet({ els, copy = REPORT_COPY.en, snapshot, send, 
       text(e.cancel, copy.close);
       closeTimer = setTimer(() => { closeTimer = null; close(); }, closeMs);
     } else if (e.send) e.send.disabled = r.outcome === 'rate_hour' || r.outcome === 'rate_day' || r.outcome === 'unavailable';
-    try { onDone(r); } catch { /* the page's */ }
     return r;
   }
 

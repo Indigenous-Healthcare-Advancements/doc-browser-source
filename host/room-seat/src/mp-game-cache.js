@@ -14,7 +14,7 @@
 // Copyright (C) 2026 John R Reeves III
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-import { checkRomName, checkRomSize } from './rom-store.js';
+import { checkRomName, checkRomSize, ROM_DIR_NAME } from './rom-store.js';
 import { pickLabGameSet } from './lab-game-set.js';
 
 export const CACHE_DIR = 'mp-lab-game-cache';
@@ -50,6 +50,25 @@ export function gameSetProblem(files, edition = 'A') {
   if (set.error) return set.error;
   if (!names.includes(set.game) || !names.includes('naomi.zip')) return `need ${set.game} and naomi.zip`;
   return null;
+}
+
+// THE PLAYER GAME'S OWN FILES, READ ONLY (the first visit of 2026-11-24). The player game on this origin keeps a
+// member's game files in its own folder (rom-store.js ROM_DIR_NAME). A room seat with nothing cached may offer them:
+// this looks for the named files there and returns them as File objects, or null when the folder or any of them is
+// missing. It never creates, writes or removes anything, and what it returns passes the same checks as a picked set
+// before it is used (mp-seat.js: the pick's own path).
+export async function playerGameFiles(names, { getRoot = defaultGetRoot } = {}) {
+  try {
+    const d = await (await getRoot()).getDirectoryHandle(ROM_DIR_NAME, { create: false });
+    const out = [];
+    for (const n of names) {
+      if (checkRomName(n)) return null;
+      const f = await (await d.getFileHandle(n, { create: false })).getFile();
+      if (checkRomSize(f.size)) return null;
+      out.push(f);
+    }
+    return out;
+  } catch { return null; }
 }
 
 // createGameCache({ getRoot, subtle }): getRoot returns the OPFS root

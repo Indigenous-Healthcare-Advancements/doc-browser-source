@@ -36,17 +36,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import { MB_TOTAL_BYTES, HUB_STATUS, MB } from './lb-lockstep.js';
-import { pickLabGameSet, pageGameSet, editionForLinkTag } from './lab-game-set.js';
+import { pickLabGameSet, pageGameSet, editionForLinkTag, labGameSet } from './lab-game-set.js';
 import { peekTicket } from './mp-wire.js';
 import { pageAllowlist } from './mp-lan.js';
 import { openSignal, createPeerLink } from './mp-rtc.js';
 import { parseAutoLeave, createAutoLeave, seatReportOf, newWatchCounts, countWatch } from './mp-seat-auto.js';
-import { createGameCache } from './mp-game-cache.js';
+import { createGameCache, playerGameFiles } from './mp-game-cache.js';
 import { parseNetem, createNetem } from './mp-netem.js';
 import { encodeSeatReport, reportText } from './mp-wire.js';
 import { createSeatLeave, cardEjectRequest, CARD_EJECT_WAIT_MS } from './mp-seat-eject.js';
 import { closingFromReply, ejectAfterRace, closingNoticeText, LEAVE_SETTLE_MS, POST_MS, EJECT_SAVE_MS } from './room-closing.js';
-import { ROOM_RESTART_REASON, ROOM_RESTART_TEXT, markRoomRestartNote } from './room-closing.js';
+import { ROOM_RESTART_REASON, ROOM_RESTART_TEXT, markRoomRestartNote, markSeatEndNote } from './room-closing.js';
 import { REVC_GAME } from './mp-entry-watch.js';
 import { createPublicPolicy } from './mp-public.js';
 import { roomSeatIntake, seatMetas, isReload, handoffIceServers, mainViewIceServers, isRoomSlot, seatWaitCard, horseLabel, serverNow, wayBackWords } from './room-seat-handoff.js';
@@ -93,6 +93,8 @@ const handoff = intake ? intake.handoff : null;
 // page goes (keepalive, so they outlive the way back; room-seat-net.js giveBackRefusedSeat). An entry this page may
 // not act on was left for the lobby instead, which frees it on arrival (room-seat-handoff.js).
 if (intake && intake.giveBack) giveBackRefusedSeat(intake.giveBack);
+// No seat to open: the lobby says so on arrival (room-closing.js markSeatEndNote), instead of a bounce with no words.
+if (intake && intake.go && !isReload()) markSeatEndNote('no_seat');
 if (intake && intake.go) location.replace(intake.go);
 // Batch 1 step 1: the room seat's live controls (room-seat-input.js). The player's keys and controller go straight
 // into this page's own seat board, with the player's DOC Online mapping (doc_controls_v1, read by that module,
@@ -117,6 +119,11 @@ let placeLeft = false;
 // The station was handed to this seat at least once (seated, and past a warm join's wait): the room then sees the
 // seat itself, and its place is no longer a reservation to give back.
 let stationMine = false;
+// The game files panel's elements and its hold timer (the panel itself is further down; here so every end path may read them).
+const fileEl = (id) => { try { return typeof document.getElementById === 'function' ? document.getElementById(id) : null; } catch { return null; } };
+const filesUi = handoff ? { box: fileEl('files-ask'), text: fileEl('files-text'), names: fileEl('files-names'), own: fileEl('files-own'), pick: fileEl('files-pick'), chooser: fileEl('files-input'), status: fileEl('files-status'), held: fileEl('files-held'), back: fileEl('files-back'), title: fileEl('files-title') } : null;
+const filesUiOk = !!(filesUi && filesUi.box && filesUi.status && filesUi.chooser);
+let filesTimer = null;
 // (notePageError is defined further down: a start fault is kept here and noted once the page is set up.)
 let seatInputFault = null;
 if (handoff) { try { seatInput = createRoomSeatInput({ win: window }); } catch (err) { seatInputFault = `controls not started (${String(err && err.message ? err.message : err).slice(0, 60)})`; } }
@@ -124,6 +131,18 @@ if (handoff) { try { seatInput = createRoomSeatInput({ win: window }); } catch (
 const TYPED_AHEAD_MS = 5000;
 // How long a refusal's own words stay on the page before it goes back.
 const RETURN_NOTICE_MS = 4000;
+// THE GAME FILES PANEL (the first visit of 2026-11-24). A room seat with no usable game files in this browser shows
+// the panel over its own screen and stays an ordinary waiting seat (the lease beaten, the link up) for as long as the
+// room keeps it, and never longer than this. Then the seat ends WITH WORDS and gives its place back.
+// How long a problem report's outcome stays in the status strip.
+const REPORT_SAID_MS = 6000;
+const FILES_HOLD_MS = 600000;
+const FILES_ROOM_MS = 60000;
+const FILES_HELD_TEXT = 'Your seat is held while you choose your game files.';
+const FILES_READY_TEXT = 'Game files ready.';
+const FILES_END_TEXT = 'Your seat was given back because no game files were chosen. Join again when you have them ready.';
+const FILES_END_PICK_TEXT = 'You can still choose them here now, so they are ready when you join again.';
+const FILES_LATE_TEXT = 'Game files ready. Go back to the lobby and join again.';
 // A seat bug (400) before the link is open: how long its report waits for
 // the link to open. Then the seat stops, with or without the report.
 const BUG_REPORT_WAIT_MS = 10000;
@@ -452,7 +471,7 @@ link.onmessage = (e) => {
   }
   if (m.type === 'stats') { state.link = m.stats; if (peer) state.rtc = { ...peer.stats }; return; }
   // Linked: the room hands the station over at the start of the next results screen (the hand window), so say so.
-  if (m.type === 'open') { linkOpen = true; if (bugWait) bugWait(true); if (!settings) msg.textContent = 'Connected. You take your seat between races and can enter the race after that. This can take a couple of minutes.'; return; } // the room ends signalling (bye) once it has taken the seat
+  if (m.type === 'open') { linkOpen = true; if (bugWait) bugWait(true); if (!settings) msg.textContent = filesAskUp() ? FILES_HELD_TEXT : 'Connected. You take your seat between races and can enter the race after that. This can take a couple of minutes.'; return; } // the room ends signalling (bye) once it has taken the seat
   if (m.type === 'welcome') {
     // A welcome on a reconnect: the board ran on, nothing restarts; the seat is back on its station.
     if (m.settings && m.settings.resumed && reconnect) { reconnectDone(m.settings); return; }
@@ -700,14 +719,80 @@ if (intake && intake.go) {
   }
 }
 
+// THE GAME FILES PANEL (the first visit of 2026-11-24: a member's first seat on a new address had no game files in
+// the browser, nothing said so, and the room ended the seat 90 s later). Shown when the cache has nothing usable and
+// nothing was picked: a heading, what to choose, the file names this release needs, one large button (its own file
+// input, the same handler as the header's), and the pick's own messages. It sits where the waiting card sits and
+// blocks nothing else. state.filesAsk: { up, at }; state.filesEnd: the seat ended with no files chosen ({ at, by }).
+function filesAskUp() { return !!(state.filesAsk && state.filesAsk.up); }
+// The pick's messages: the status line, and the panel while it is up. After a seat that ended with no files, the
+// status line keeps the end's own words and its way back, and the panel alone speaks.
+function filesSay(t) {
+  if (!state.filesEnd) msg.textContent = t;
+  if (filesUiOk && (filesAskUp() || state.filesEnd)) filesUi.status.textContent = t;
+}
+function filesAskShow(why = null) {
+  if (!filesUiOk || !handoff || files || picking || state.roomEnd) return;
+  if (filesAskUp()) { if (why) filesUi.status.textContent = why; return; }
+  state.filesAsk = { up: true, at: Date.now() };
+  const set = labGameSet(releaseEdition(handoff.release));
+  const label = handoff.release === 'revc' ? 'Rev C' : handoff.release === 'doc99' ? "DOC '99" : '';
+  if (filesUi.text && label && label !== 'Rev C') filesUi.text.textContent = `This game runs from your own copy. Choose your ${label} game file and BIOS file (two .zip files; select both together). They stay in this browser, so you only do this once on each device.`;
+  if (filesUi.names && set) { filesUi.names.textContent = `The two files: ${set.game} (the game) and naomi.zip (the BIOS).`; filesUi.names.hidden = false; }
+  filesUi.status.textContent = why || '';
+  filesUi.box.hidden = false;
+  msg.textContent = FILES_HELD_TEXT;
+  if (filesTimer === null) filesTimer = setTimeout(filesTimeout, FILES_HOLD_MS);
+  // The player game's own copy on this origin, if it has both files: offered first, read only (mp-game-cache.js).
+  if (set && filesUi.own && typeof filesUi.own.addEventListener === 'function') {
+    playerGameFiles([set.game, 'naomi.zip']).then((got) => {
+      if (!got || !filesAskUp() || files || picking) return;
+      filesUi.own.hidden = false;
+      filesUi.own.addEventListener('click', () => { if (!picking) onFilesPicked({ picked: got }); });
+    }, () => {});
+  }
+}
+function filesAskDone() {
+  if (filesTimer !== null) { clearTimeout(filesTimer); filesTimer = null; }
+  if (!filesAskUp()) return;
+  state.filesAsk.up = false;
+  if (filesUiOk) { filesUi.status.textContent = FILES_READY_TEXT; filesUi.box.hidden = true; }
+  msg.textContent = FILES_READY_TEXT;
+}
+// Any other end takes the panel away (its own words stand); the end for no files keeps it, to choose for next time.
+function filesAskEnd() {
+  if (filesTimer !== null) { clearTimeout(filesTimer); filesTimer = null; }
+  if (!filesUiOk || !state.filesAsk) return;
+  if (!state.filesEnd) { state.filesAsk.up = false; filesUi.box.hidden = true; return; }
+  state.filesAsk.up = false;
+  if (filesUi.title) filesUi.title.textContent = 'Your seat was given back';
+  if (filesUi.text) filesUi.text.textContent = `${FILES_END_TEXT} ${cache ? FILES_END_PICK_TEXT : ''}`.trim();
+  if (filesUi.held) filesUi.held.hidden = true;
+  if (!cache && filesUi.pick) filesUi.pick.hidden = true;
+  if (!cache && filesUi.own) filesUi.own.hidden = true;
+  filesUi.status.textContent = '';
+  if (filesUi.back) { filesUi.back.href = handoff.return_path; filesUi.back.textContent = BACK.link; filesUi.back.hidden = false; }
+}
+// The hold ran out with nothing chosen: the seat's own Leave path, with these words (the lease closed, the place given back).
+function filesTimeout() {
+  filesTimer = null;
+  if (state.roomEnd || files || !filesAskUp()) return;
+  if (picking) { filesTimer = setTimeout(filesTimeout, 15000); return; } // a pick is being read and checked: let it finish
+  state.filesEnd = { at: Date.now(), by: 'time' };
+  endRoomSeat('left', FILES_END_TEXT, 0);
+}
 let filesEdition = null;
 // Rev C Rebalanced: the game file rebuilt in page memory once (maybeStart).
 let rebuilding = false;
 let rebuilt = false;
-async function onFilesPicked() {
+async function onFilesPicked(ev = null) {
   if (netemParsed.error) return; // the seat refused; keep its message
-  if (state.roomEnd) return; // the room seat has ended: no board after that
-  const picked = Array.from(input.files || []);
+  // A seat that ended with no files chosen still takes a pick, for the next join only: checked and kept, never run.
+  const late = !!(state.roomEnd && state.filesEnd && cache);
+  if (state.roomEnd && !late) return; // the room seat has ended: no board after that
+  // The header's input, the panel's own, or files handed in (the player game's copy in this browser).
+  const src = ev && ev.target && ev.target.files ? ev.target : input;
+  const picked = ev && Array.isArray(ev.picked) ? ev.picked : Array.from(src.files || []);
   // The room seat picks the files of its hand-off's release (Rev C: A's
   // drbyocwc.zip; DOC '99: J99's derbyoc.zip); its ticket's edition must
   // agree (maybeStart). The lab seat: the seat ticket's edition (the room's
@@ -716,7 +801,7 @@ async function onFilesPicked() {
   const set = handoff ? pickLabGameSet(picked.map((f) => f.name), releaseEdition(handoff.release)) : pageGameSet(picked.map((f) => f.name), ticketEdition);
   const game = set.game && picked.find((f) => f.name.toLowerCase() === set.game);
   const bios = picked.find((f) => f.name.toLowerCase() === 'naomi.zip');
-  if (set.error || !game || !bios) { msg.textContent = set.error || 'Need naomi.zip.'; return; }
+  if (set.error || !game || !bios) { filesSay(set.error || 'Need naomi.zip.'); return; }
   if (files || picking) {
     if (fileSource === 'cached') msg.textContent = 'Using the cached game files. To pick others, forget them and reload this page.';
     return;
@@ -731,19 +816,26 @@ async function onFilesPicked() {
     if (gameCheck) {
       // Refused files are never used and never cached; the player may pick again (nothing has started).
       const before = msg.textContent;
-      msg.textContent = CHECKING_TEXT;
+      filesSay(CHECKING_TEXT);
       const r = await checkGameFiles({ edition: set.edition, files: got });
-      if (state.roomEnd) return; // the seat ended meanwhile: keep its notice
-      if (!r.ok) { state.gameRefused = { which: r.which, why: r.why }; msg.textContent = gameRefusalText(r); return; }
+      if (state.roomEnd && !(late && state.filesEnd)) return; // the seat ended meanwhile: keep its notice
+      if (!r.ok) { state.gameRefused = { which: r.which, why: r.why }; filesSay(gameRefusalText(r)); return; }
       state.gameRefused = null;
       state.gameChecked = { edition: set.edition, weak: r.weak.length };
       if (msg.textContent === CHECKING_TEXT) msg.textContent = before;
+      if (filesUiOk && filesUi.status.textContent === CHECKING_TEXT) filesUi.status.textContent = '';
+    }
+    if (state.roomEnd) {
+      // The seat ended with no files (or ended while these were read): kept for the next join, never run here.
+      if (!state.filesEnd || !cache) return;
+      try { await cache.store(got, set.edition); filesSay(FILES_LATE_TEXT); if (filesUi && filesUi.pick) filesUi.pick.hidden = true; if (filesUi && filesUi.own) filesUi.own.hidden = true; } catch (err) { filesSay(`Game files not kept (${reportText(String(err && err.message ? err.message : err), 80)}).`); }
+      return;
     }
     files = got;
     fileSource = 'picked';
     filesEdition = set.edition;
   } catch {
-    msg.textContent = 'The game files could not be read; pick them again.';
+    filesSay('The game files could not be read; pick them again.');
     return;
   } finally {
     picking = false;
@@ -752,9 +844,11 @@ async function onFilesPicked() {
     // Kept in this browser profile only; a failure does not stop the seat.
     cache.store(files.map(([n, b]) => [n, b.slice(0)]), filesEdition).then(() => { forgetBtn.hidden = false; }, (err) => { msg.textContent = `Game files not cached (${reportText(String(err && err.message ? err.message : err), 80)}).`; });
   }
+  filesAskDone();
   maybeStart();
 }
 input.addEventListener('change', onFilesPicked);
+if (filesUiOk && typeof filesUi.chooser.addEventListener === 'function') filesUi.chooser.addEventListener('change', onFilesPicked);
 // Files picked before this script ran (the page is up before its module loads) fired their change unheard: take them
 // now, or the seat waits for files it already has (the no-boot after "welcomed", runs 8 and 12).
 if (input.files && input.files.length > 0) onFilesPicked();
@@ -787,6 +881,7 @@ if (cache && isolated && peek && peek.tag && !netemParsed.error) {
           cache.forget().then(() => {}, () => {});
           forgetBtn.hidden = true;
           msg.textContent = `${gameRefusalText(c)} Pick the game files again.`;
+          filesAskShow(`${gameRefusalText(c)} Choose the game files again.`);
           return;
         }
         state.gameChecked = { edition: cacheEdition, weak: c.weak.length };
@@ -796,8 +891,9 @@ if (cache && isolated && peek && peek.tag && !netemParsed.error) {
       forgetBtn.hidden = false;
       if (files || picking) return; // a pick already won; nothing to ask for
       msg.textContent = `Cached game files not used (${r.reason}); pick them again.`;
-    }
-  }, () => {});
+      filesAskShow('The copy kept in this browser could not be used. Choose the game files again.');
+    } else filesAskShow(); // nothing kept in this browser yet: the first visit on this device
+  }, () => { filesAskShow(); });
 }
 
 // L2: the board presses CARD and polls for the card's write-back (mp-seat-eject.js).
@@ -1241,7 +1337,10 @@ function endRoomSeat(why, text, delayMs, bugNote = null) {
   const saving = !!(lease && lease.state() === 'beating' && saveQueue && ((board && !boardDead) || saveQueue.state().pending > 0));
   if (saving) lease.beatNow().catch(() => null);
   else if (lease) lease.stop(); // nothing to save: the beat never outlives the seat
-  input.disabled = true; // no game files after the end
+  input.disabled = true; // no game files after the end (the files panel's own input still takes a pick for next time: filesAskEnd)
+  filesAskEnd();
+  // Every end leaves the lobby a line for the way back (room-closing.js markSeatEndNote); the restart has its own.
+  if (why !== 'restart') state.roomEnd.note = markSeatEndNote(state.filesEnd ? 'files' : why);
   if (text) msg.textContent = text;
   if (why === 'bug') { notePageError(bugNote || `lease answer ${state.leaseEnd ? state.leaseEnd.status : 0}`); showWayBack(handoff.return_path); }
   const report = why === 'bug' ? reportFirst() : Promise.resolve();
@@ -1366,6 +1465,8 @@ function dropRoomSeat(why, text, delayMs) {
   // A missed eject: its later write landed (in the drain): saved, said so (ruled); else the staff text. Never a way back on its own.
   if (ejectMissed) { msg.textContent = missedText(); showWayBack(handoff.return_path); return; }
   if (text) msg.textContent = text;
+  // No game files were chosen: the page stays, with its words, the panel (to choose them for next time) and the way back.
+  if (state.filesEnd) { showWayBack(handoff.return_path); return; }
   // A seat bug stays; so does the other horse's end (its notice says where to go, and is not gone in a moment), and
   // a horse change that could not be finished ('swap': its words say what happened and what to do).
   if (why === 'bug' || why === 'other_horse' || why === 'swap') { showWayBack(handoff.return_path); return; }
@@ -1413,6 +1514,10 @@ function roomLinkEnded(reason) {
   if (goneWait) goneWait();
   const why = linkEndCause(reason);
   state.linkEnd = { why };
+  // THE 90 SECONDS (2026-11-24): the room ends a linked seat whose board has sent no frame in its first-frame time
+  // (mp-room-link-worker.js firstFrameMs, 90 s). With the files panel up that is a seat with no game files: said so.
+  // A link that FAILED early (the network) keeps its own words; one gone after FILES_ROOM_MS of waiting is that limit too.
+  if (why !== 'left' && filesAskUp() && !files && (why === 'dropped' || Date.now() - state.filesAsk.at >= FILES_ROOM_MS)) { state.filesEnd = { at: Date.now(), by: 'room' }; endRoomSeat(why, FILES_END_TEXT, RETURN_NOTICE_MS); return; }
   endRoomSeat(why, why === 'lost' ? END_TEXT.linkLost : END_TEXT[why], why === 'left' ? 0 : RETURN_NOTICE_MS);
 }
 // 1d commit 5: the writes not landed yet (queued or held).
@@ -2303,7 +2408,7 @@ if (touchPage) {
     try { const mq = window.matchMedia('(pointer: coarse)'); if (mq && typeof mq.addEventListener === 'function') mq.addEventListener('change', applyTouchLayout); } catch { /* no media queries: no touch layout */ }
     // The browser's own gestures stay off the play area (scroll, pull to refresh, the long press menu, zoom, text
     // selection); the bar, the menu, the prompt and every panel keep them, so a player who needs to zoom still can.
-    guardPlayArea({ root: stage, isPlay: (t) => !!touchLayout && !(t && typeof t.closest === 'function' && t.closest('#menu-btn, #bar-leave, #bar-msg, #sound-ask, .padarrange')) });
+    guardPlayArea({ root: stage, isPlay: (t) => !!touchLayout && !(t && typeof t.closest === 'function' && t.closest('#menu-btn, #bar-leave, #bar-msg, #sound-ask, #files-ask, .padarrange')) });
     if (menuBtn) menuBtn.addEventListener('click', () => setMenu(!menuOpen()));
     if (menuClose) menuClose.addEventListener('click', () => setMenu(false));
     if (barLeave) barLeave.addEventListener('click', () => askLeave());
@@ -2380,7 +2485,15 @@ if (roomSeat && handoff) {
         snapshot: reportSnapshot,
         send: (r) => sender.send(r),
         hold: (on) => { if (!seatInput) return; if (on) seatInput.hold('report', true); else seatInput.unholdWhenIdle('report'); },
-        onDone: (r) => seatLog.add('report', `${r.outcome}${r.status ? ` (${r.status})` : ''}`),
+        // The outcome's words also go in the status strip for a few seconds (the sheet closes by itself soon after a
+        // send, and is no veil: a member looking at the game must still see that the report went through, or did not).
+        onDone: (r, words) => {
+          seatLog.add('report', `${r.outcome}${r.status ? ` (${r.status})` : ''}`);
+          if (!words || state.roomEnd) return;
+          const before = msg.textContent;
+          msg.textContent = words;
+          setTimeout(() => { if (msg.textContent === words && !state.roomEnd) msg.textContent = before; }, REPORT_SAID_MS);
+        },
       });
       reportBtn.hidden = false;
       window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && reportSheet && reportSheet.isOpen() && !reportSheet.busy()) { e.preventDefault(); reportSheet.close(); } });
@@ -2422,7 +2535,9 @@ try {
     const ended = () => ['refused', 'left', 'dropped', 'leaving'].includes(state.phase) || state.gone;
     const paint = () => { try { paintCard(); } catch { /* the card is a nicety: it never stops the seat */ } };
     const paintCard = () => {
-      const c = ended() ? null : seatWaitCard({ phase: state.phase, linkOpen, warm: state.warm === true, waitedS: (performance.now() - stepAt) / 1000, mainOn: !!(mainVideo && !mainVideo.hidden) });
+      const filesBox = filesUiOk && filesUi.box.hidden === false && filesUi.box.style ? filesUi.box : null;
+      if (filesBox && !touchLayout) { filesBox.style.left = `${screenEl.offsetLeft}px`; filesBox.style.top = `${screenEl.offsetTop}px`; filesBox.style.width = `${screenEl.offsetWidth}px`; filesBox.style.height = `${screenEl.offsetHeight}px`; } else if (filesBox) { for (const p of ['left', 'top', 'width', 'height']) if (filesBox.style[p]) filesBox.style[p] = ''; }
+      const c = ended() || filesBox ? null : seatWaitCard({ phase: state.phase, linkOpen, warm: state.warm === true, waitedS: (performance.now() - stepAt) / 1000, mainOn: !!(mainVideo && !mainVideo.hidden) });
       // Racing: the station is the player's and nothing is over their screen (the touch layout hides its status strip then).
       if (document.body && document.body.classList) { const racing = !c && state.phase === 'seated'; if (document.body.classList.contains('racing') !== racing) document.body.classList.toggle('racing', racing); }
       if (!c) { if (!waitEl.hidden) waitEl.hidden = true; return; }
