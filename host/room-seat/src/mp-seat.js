@@ -46,7 +46,7 @@ import { parseNetem, createNetem } from './mp-netem.js';
 import { encodeSeatReport, reportText } from './mp-wire.js';
 import { createSeatLeave, cardEjectRequest, CARD_EJECT_WAIT_MS } from './mp-seat-eject.js';
 import { closingFromReply, ejectAfterRace, closingNoticeText, LEAVE_SETTLE_MS, POST_MS, EJECT_SAVE_MS } from './room-closing.js';
-import { ROOM_RESTART_REASON, ROOM_RESTART_TEXT, markRoomRestartNote, markSeatEndNote } from './room-closing.js';
+import { ROOM_RESTART_REASON, ROOM_RESTART_TEXT, markRoomRestartNote, markSeatEndNote, SEAT_WAITING_END_CODE } from './room-closing.js';
 import { REVC_GAME } from './mp-entry-watch.js';
 import { createPublicPolicy } from './mp-public.js';
 import { roomSeatIntake, seatMetas, isReload, handoffIceServers, mainViewIceServers, isRoomSlot, seatWaitCard, horseLabel, serverNow, wayBackWords } from './room-seat-handoff.js';
@@ -116,6 +116,7 @@ let touchLayout = null;
 let wakeLock = null;
 // The place at the room server was given back (leavePlace, further down; here so every end path may read it).
 let placeLeft = false;
+let endNote = null; // the code of the lobby's note for this seat's end (endRoomSeat), marked again as the page goes
 // The station was handed to this seat at least once (seated, and past a warm join's wait): the room then sees the
 // seat itself, and its place is no longer a reservation to give back.
 let stationMine = false;
@@ -182,6 +183,8 @@ const END_TEXT = {
 // it once the seat dropped): said plainly, with no codes, so the member
 // knows to tell staff. HELD_TEXT when it is not kept in the stash either (a
 // closed page loses it); HELD_KEPT_TEXT when the stash keeps it.
+// The room went away while this seat was still waiting for its station (endRoomSeat, waitingEnd).
+const WAITING_END_TEXT = `The room restarted while you were waiting. ${BACK.going}`;
 const HELD_TEXT = 'The connection to the room ended, and your latest card change could not be saved. Please tell the staff. Leaving or closing this page loses that change.';
 const HELD_KEPT_TEXT = 'Your latest card change could not be saved yet. It is kept in this browser for the staff to check. Please tell the staff.';
 // The held change saved after all: the way back is offered.
@@ -353,6 +356,7 @@ let reportSent = '';
 let reportAt = 0;
 // The link worker said 'open' (a report sent before it is dropped).
 let linkOpen = false;
+let linkEverOpen = false; // the link to the room was up at least once (waitingEnd)
 // A bug report waiting for the link to open (endRoomSeat).
 let bugWait = null;
 // The board worker failed (its card look cannot run).
@@ -471,7 +475,7 @@ link.onmessage = (e) => {
   }
   if (m.type === 'stats') { state.link = m.stats; if (peer) state.rtc = { ...peer.stats }; return; }
   // Linked: the room hands the station over at the start of the next results screen (the hand window), so say so.
-  if (m.type === 'open') { linkOpen = true; if (bugWait) bugWait(true); if (!settings) msg.textContent = filesAskUp() ? FILES_HELD_TEXT : 'Connected. You take your seat between races and can enter the race after that. This can take a couple of minutes.'; return; } // the room ends signalling (bye) once it has taken the seat
+  if (m.type === 'open') { linkOpen = true; linkEverOpen = true; if (bugWait) bugWait(true); if (!settings) msg.textContent = filesAskUp() ? FILES_HELD_TEXT : 'Connected. You take your seat between races and can enter the race after that. This can take a couple of minutes.'; return; } // the room ends signalling (bye) once it has taken the seat
   if (m.type === 'welcome') {
     // A welcome on a reconnect: the board ran on, nothing restarts; the seat is back on its station.
     if (m.settings && m.settings.resumed && reconnect) { reconnectDone(m.settings); return; }
@@ -1328,6 +1332,21 @@ function dropLink() {
 // only then does the lease stop, so a nonce refusal of the eject save can
 // still beat for a new one. The beat runs beside the eject (the queue reads
 // the nonce when it posts). Otherwise the beat stops at once, as before.
+// THE ROOM WENT AWAY WHILE THE SEAT WAITED (2026-11-24: the room server was restarted while a member was on the seat
+// page with no station yet, and he was back in the lobby with no reason given). A seat whose link to the room was
+// up and whose station was never its own, and whose room then said it is restarting, or whose link was ended from
+// the room's side: the lobby's note is the waiting one (room-closing.js SEAT_WAITING_END_CODE), and so are the
+// page's words. Not a seat that left by itself, not a link that failed or never came up (the network: its own
+// words stand), and not the end for no game files (its panel, its words and its own note stay).
+function waitingEnd(why) {
+  return !stationMine && !state.filesEnd && (why === 'restart' || (why === 'dropped' && linkEverOpen));
+}
+// The note is marked again as the page goes: a page that stayed up after its end (the files panel, a held save) is
+// left minutes later, and the lobby takes a note only while it is fresh.
+if (roomSeat && handoff) window.addEventListener('pagehide', () => {
+  if (!state.roomEnd || !endNote) return;
+  if (endNote === 'restart') markRoomRestartNote(); else markSeatEndNote(endNote);
+});
 function endRoomSeat(why, text, delayMs, bugNote = null) {
   leavePlace(); // at once: the drain below can take a while, and a place that is not seated must not wait for it
   if (!handoff || state.roomEnd) return;
@@ -1340,7 +1359,10 @@ function endRoomSeat(why, text, delayMs, bugNote = null) {
   input.disabled = true; // no game files after the end (the files panel's own input still takes a pick for next time: filesAskEnd)
   filesAskEnd();
   // Every end leaves the lobby a line for the way back (room-closing.js markSeatEndNote); the restart has its own.
-  if (why !== 'restart') state.roomEnd.note = markSeatEndNote(state.filesEnd ? 'files' : why);
+  // A room that went away under a seat that was still waiting has its own too (waitingEnd): the code, not the why.
+  endNote = why === 'restart' && stationMine ? 'restart' : waitingEnd(why) ? SEAT_WAITING_END_CODE : why === 'restart' ? null : state.filesEnd ? 'files' : why;
+  if (endNote && endNote !== 'restart') state.roomEnd.note = markSeatEndNote(endNote);
+  if (endNote === SEAT_WAITING_END_CODE && why !== 'restart') text = WAITING_END_TEXT;
   if (text) msg.textContent = text;
   if (why === 'bug') { notePageError(bugNote || `lease answer ${state.leaseEnd ? state.leaseEnd.status : 0}`); showWayBack(handoff.return_path); }
   const report = why === 'bug' ? reportFirst() : Promise.resolve();
@@ -1500,6 +1522,9 @@ function roomRestarting() {
     }
   } catch { /* the status line says it */ }
   if (!handoff) return; // the lab seat only says it
+  // A seat with its station: the restart note (its horse's last saved race). A seat still waiting: the waiting note
+  // (endRoomSeat, waitingEnd), and nothing is said of a horse it never raced here.
+  if (!stationMine) { msg.textContent = WAITING_END_TEXT; if (restartNotice) restartNotice.textContent = WAITING_END_TEXT; endRoomSeat('restart', WAITING_END_TEXT, RESTART_BACK_MS); return; }
   state.restarting.note = markRoomRestartNote();
   endRoomSeat('restart', ROOM_RESTART_TEXT, RESTART_BACK_MS);
 }
