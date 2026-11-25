@@ -46,7 +46,7 @@ import { parseNetem, createNetem } from './mp-netem.js';
 import { encodeSeatReport, reportText } from './mp-wire.js';
 import { createSeatLeave, cardEjectRequest, CARD_EJECT_WAIT_MS } from './mp-seat-eject.js';
 import { closingFromReply, ejectAfterRace, closingNoticeText, LEAVE_SETTLE_MS, POST_MS, EJECT_SAVE_MS } from './room-closing.js';
-import { ROOM_RESTART_REASON, ROOM_RESTART_TEXT, markRoomRestartNote, markSeatEndNote, SEAT_WAITING_END_CODE } from './room-closing.js';
+import { ROOM_RESTART_REASON, ROOM_RESTART_TEXT, markRoomRestartNote, markSeatEndNote, SEAT_WAITING_END_CODE, roomEndOfSeat } from './room-closing.js';
 import { REVC_GAME } from './mp-entry-watch.js';
 import { createPublicPolicy } from './mp-public.js';
 import { roomSeatIntake, seatMetas, isReload, handoffIceServers, mainViewIceServers, isRoomSlot, seatWaitCard, horseLabel, serverNow, wayBackWords } from './room-seat-handoff.js';
@@ -492,6 +492,8 @@ link.onmessage = (e) => {
   if (m.type === 'refused') { state.refused = m.reason; state.phase = 'refused'; msg.textContent = `The room refused this seat (${m.reason}).`; offerEnded(); return; }
   if (m.type === 'taken') { stationMine = true; if (m.info && typeof m.info.resume === 'string') resumeInfo = { key: m.info.resume, ms: Number(m.info.resumeMs) || 0 }; if (state.warm) { state.warm = false; if (seatInput) seatInput.unholdWhenIdle('warm'); msg.textContent = settings ? (newHorseWaiting() ? `Seat ${settings.slot}. ${NEW_HORSE_START_TEXT}` : `Seat ${settings.slot}. You can enter the next race.`) : msg.textContent; } return; }
   if (m.type === 'card-ack') { state.cardAcks.push(m.verdict); return; }
+  // The room ends this one seat (room-closing.js: its board does not run at full speed, or the operator ended it).
+  if (m.type === 'eject' && roomEndOfSeat(m.reason)) { roomEndsSeat(roomEndOfSeat(m.reason)); return; }
   // The room is restarting (room-closing.js ROOM_RESTART_REASON): said at once, saved, and back to the lobby.
   if (m.type === 'eject' && m.reason === ROOM_RESTART_REASON) { roomRestarting(); return; }
   // L2 (DOC '99 closing): the room asks for the eject save now. The seat's
@@ -546,6 +548,7 @@ function reconnectStart(reason) {
   if (!resumeInfo || !resumeInfo.ms || !started || !(state.phase === 'linking' || state.phase === 'seated' || state.phase === 'welcomed')) return false;
   if (state.roomEnd) return false;
   if (state.restarting) return false; // the room said it is restarting: there is no way back to this room
+  if (state.roomEnds) return false; // the room ended this seat (the speed test, the operator): its station is not held for it
   reconnect = { since: Date.now(), until: Date.now() + resumeInfo.ms - 1500, tries: 0, prevPhase: state.phase, why: reason, timer: null, sig: null, peer: null };
   state.phase = 'reconnecting';
   state.reconnects = (state.reconnects || 0) + 1;
@@ -1505,6 +1508,31 @@ function dropRoomSeat(why, text, delayMs) {
 // server closes the lease with no fault. The note for the lobby is set first, so it is there however the page goes.
 const RESTART_BACK_MS = 6000;
 let restartNotice = null;
+// THE ROOM ENDS THIS ONE SEAT (2026-11-24; room-closing.js SEAT_SLOW_REASON and SEAT_OPERATOR_REASON): its board does
+// not run at full speed (the room's speed test: not seated, or its station taken back), or the operator ended it.
+// As the restart: the words at once (the status line, and the notice over the game), the lobby's note set first,
+// then the ordinary end path (endRoomSeat: the place given back at once if the station was never this seat's, one
+// fresh beat, the card made safe, the save queue drained on the live lease, the board stopped last) and the way
+// back. The seat closes no lease here; the room marked a seated seat as ended by the room.
+function roomEndsSeat(end) {
+  if (state.roomEnds) return;
+  state.roomEnds = { at: Date.now(), note: end.note };
+  if (state.roomEnd) return; // the seat is ending by itself already: its own words stand
+  msg.textContent = end.text;
+  try {
+    if (!restartNotice && typeof document.createElement === 'function') {
+      const d = document.createElement('div');
+      d.id = 'room-end-notice';
+      d.setAttribute('role', 'alert');
+      d.textContent = end.text;
+      d.style.cssText = 'position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);z-index:2147483000;box-sizing:border-box;width:max-content;max-width:min(92vw,34rem);padding:1.1rem 1.3rem;border-radius:.6rem;background:rgba(12,16,24,.94);color:#fff;font:600 1.15rem/1.4 system-ui,sans-serif;text-align:center;box-shadow:0 .4rem 2rem rgba(0,0,0,.6);pointer-events:none';
+      (document.fullscreenElement || document.body).append(d);
+      restartNotice = d;
+    }
+  } catch { /* the status line says it */ }
+  if (!handoff) return; // the lab seat only says it
+  endRoomSeat(end.note, end.text, RESTART_BACK_MS);
+}
 function roomRestarting() {
   if (state.restarting) return;
   state.restarting = { at: Date.now(), note: false };

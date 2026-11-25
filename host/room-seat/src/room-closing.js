@@ -189,6 +189,35 @@ export function markSeatEndNote(code, now = Date.now(), storage = (() => { try {
 // yet (choosing its game files, or waiting for the race in progress) when the room or the room server restarted.
 // Its note's code; the lobby's words: "The room restarted while you were waiting. You can join again now."
 export const SEAT_WAITING_END_CODE = 'waiting_restart';
+// THE SEAT THAT CANNOT KEEP UP, AND THE OPERATOR'S END (the community pilot, 2026-11-24; asked for by John R Reeves III,
+// MHA). The room ends one seat and says why with the control message a seat already takes (T.eject) and one of these
+// reasons in place of 'closing':
+//   'slow'      the seat's board does not run at full speed (the room's speed test, mp-seat-speed.js): either it was
+//               not handed its station (the gate, while it waited on its shadow link), or it lost it (the watch);
+//   'operator'  the operator ended this one seat (the room server's debug port, POST /rooms/debug/end-seat).
+// The seat page says the words at once, saves what it still owes on its live lease, and goes back to its return_path
+// with a one-shot note for the lobby (markSeatEndNote, the codes below; the lobby has the same words). As for the
+// restart, the seat closes NO lease for this: a seat that held its station is marked as ended by the room
+// (mp-room-return.js markRoomEnd, why slow_seat or operator_end) and the room server closes its lease
+// 'server_closed' (no fault, no rest, a race with no result is void; card saves already made stay made). A seat that
+// never held the station gives its place back itself, as every seat that ends while it waits does.
+export const SEAT_SLOW_REASON = 'slow';
+export const SEAT_OPERATOR_REASON = 'operator';
+// One note for the gate and for the watch (John R Reeves III, MHA: the same note).
+export const SEAT_SLOW_TEXT = 'Your device could not keep the game at full speed, so you were not seated. Close other apps and tabs, or try a faster device or a steadier connection.';
+export const SEAT_OPERATOR_TEXT = 'An operator ended your seat.';
+// The lobby's note codes (room-closing.js markSeatEndNote: lower case letters and underscores, at most 24).
+export const SEAT_SLOW_NOTE = 'slow_device';
+export const SEAT_OPERATOR_NOTE = 'operator_end';
+// What a seat page does with an eject reason of this kind: { note, text } or null (any other reason).
+export function roomEndOfSeat(reason) {
+  if (reason === SEAT_SLOW_REASON) return { note: SEAT_SLOW_NOTE, text: SEAT_SLOW_TEXT };
+  if (reason === SEAT_OPERATOR_REASON) return { note: SEAT_OPERATOR_NOTE, text: SEAT_OPERATOR_TEXT };
+  return null;
+}
+// The room waits this long between telling a seat and ending its link, so the words arrive and the seat's own
+// close and saves go first.
+export const SEAT_ROOM_END_NOTICE_MS = 5000;
 // Did a station change boards around this build? The filler reboots of the hang watchdog (its steps 1 and 2) were
 // made for that case only; with no change they have never freed a stuck master (0 of 4 on the live room), so the
 // room goes to its restart. slots: the room's stations ({ slot, owner, returnedMs, takenAt }); buildAt and
