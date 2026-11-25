@@ -204,7 +204,9 @@ export const SEAT_WAITING_END_CODE = 'waiting_restart';
 export const SEAT_SLOW_REASON = 'slow';
 export const SEAT_OPERATOR_REASON = 'operator';
 // One note for the gate and for the watch (John R Reeves III, MHA: the same note).
-export const SEAT_SLOW_TEXT = 'Your device could not keep the game at full speed, so you were not seated. Close other apps and tabs, or try a faster device or a steadier connection.';
+// The words (John R Reeves III, MHA, 2026-11-25): a slow device OR a busy network reads as slow (mp-seat-speed.js,
+// the meter's note), so the note names both and says what to try.
+export const SEAT_SLOW_TEXT = 'The game could not keep full speed, so you were not seated. A slow device or busy Wi-Fi can cause this. Try a plugged-in computer or another network.';
 export const SEAT_OPERATOR_TEXT = 'An operator ended your seat.';
 // The lobby's note codes (room-closing.js markSeatEndNote: lower case letters and underscores, at most 24).
 export const SEAT_SLOW_NOTE = 'slow_device';
