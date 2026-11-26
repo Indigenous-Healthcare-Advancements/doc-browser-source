@@ -2558,10 +2558,11 @@ if (roomSeat && handoff) {
   }
 }
 
-// Autoleave and the seat report, once the board runs.
-function sendReport(force = false) {
+// Autoleave and the seat report, once the board runs. Before it runs, a room seat that waits for its game files
+// sends the same report with phase 'files' (2026-11-26; mp-wire.js), every 5 s while it waits.
+function sendReport(force = false, phase = null) {
   let body;
-  try { body = encodeSeatReport(seatReportOf(state, pageErrors)); } catch { return; }
+  try { body = encodeSeatReport({ ...seatReportOf(state, pageErrors), ...(phase ? { phase } : {}) }); } catch { return; }
   const key = new TextDecoder().decode(body).replace(/"f":[0-9]+,/, '');
   if (!force && key === reportSent && Date.now() - reportAt < 5000) return;
   reportSent = key;
@@ -2569,8 +2570,10 @@ function sendReport(force = false) {
   const buf = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
   link.postMessage({ type: 'report', body: buf }, [buf]);
 }
+// Before the board runs: a room seat that waits for its game files says so (phase 'files'; 2026-11-26, mp-wire.js).
+function filesWaitReport() { if (handoff && linkOpen && filesAskUp() && !files && !state.roomEnd) sendReport(false, 'files'); }
 setInterval(() => {
-  if (!started || state.phase === 'left' || state.phase === 'dropped' || state.phase === 'refused') return;
+  if (!started || state.phase === 'left' || state.phase === 'dropped' || state.phase === 'refused') { if (!started) filesWaitReport(); return; }
   cardNowIn();
   if (autoLeave && (state.phase === 'linking' || state.phase === 'seated') && autoLeave.step({ races: state.board.counts.races, cardWrites: state.cardWrites, now: Date.now() })) seatLeave.leave('finish');
   if (state.phase !== 'leaving') sendReport();
