@@ -71,8 +71,11 @@ export const fromUtf8 = (b) => new TextDecoder().decode(b);
 // Small and typed on both ends: the seat sends only these fields, and the
 // room keeps only these fields, each clamped (a seat cannot put anything
 // else into the room's log). No card bytes, no file names.
+// Phase 'files' (2026-11-26): a seat whose board has not started because it waits for the player's own game files
+// (mp-seat.js); without it the room heard nothing before the board booted, so "choosing files" and "stuck before
+// boot" looked the same in the room's log.
 export const SEAT_REPORT_MAX_BYTES = 1024;
-const REPORT_PHASES = new Set(['connecting', 'retrying', 'welcomed', 'booting', 'linking', 'seated', 'ejecting', 'leaving', 'left', 'dropped', 'refused']);
+const REPORT_PHASES = new Set(['connecting', 'retrying', 'welcomed', 'files', 'booting', 'linking', 'seated', 'ejecting', 'leaving', 'left', 'dropped', 'refused']);
 const reportInt = (v, max = 0x7fffffff) => (Number.isInteger(v) && v >= 0 && v <= max ? v : null);
 // Printable ASCII only, at most n characters.
 export const reportText = (v, n = 120) => (typeof v === 'string' ? v.replace(/[^\x20-\x7e]/g, '?').slice(0, n) : null);
