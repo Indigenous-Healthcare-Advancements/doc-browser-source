@@ -22,3 +22,5 @@ jobs:
           node-version: "24"
       - name: Release manifest script tests
         run: node --test scripts/release-manifest.test.mjs
+      - name: Release record script tests
+        run: node --test scripts/release-record.test.mjs
