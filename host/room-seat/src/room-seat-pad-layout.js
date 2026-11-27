@@ -111,7 +111,7 @@ export const EDGE_MARGIN_PX = 8;
 export const PAD_SIZE = Object.freeze({ up: 76, down: 76, left: 76, right: 76, a: 76, card: 76, start: 76, whip: 114, b: 114 });
 /** Centre-to-centre distance across the d-pad cross, at full scale: a button plus a hairline. */
 export const STEP_PX = 82;
-// The cross around OK in one corner; START and the card above Hold and Whip in the other (John, 2026-09-16).
+// The cross around OK in one corner; START and the card above Hold and Whip in the other (2026-09-16).
 const LEFT_CLUSTER = Object.freeze({ a: [0, 0], up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] });
 // Landscape: the horse buttons side by side. Portrait: stacked, Hold above Whip.
 const RIGHT_WIDE = Object.freeze({ start: [0, -1.25], card: [1.9, -1.25], b: [0, 0], whip: [1.9, 0] });

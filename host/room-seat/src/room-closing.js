@@ -1,5 +1,5 @@
 // room-closing.js: DOC '99 rooms, L2 lease closing (doc-arcade
-// docs/rooms/jp-close-grace.md, revision 9, on claude/m3-rooms-l2). What a
+// docs/rooms/jp-close-grace.md, revision 9). What a
 // lease reply says about closing, which clock applies, and when a seat must
 // be ejected so its eject save lands before closing_until. Pure and
 // browser-safe: the room server (tools/room-server/manager.mjs) uses it for

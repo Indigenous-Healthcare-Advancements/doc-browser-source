@@ -23,8 +23,7 @@
 //                        { why, last } (why: 'no board' for a station a remote seat or nothing holds, 'timeout',
 //                        'not running').
 // Reading two dumps: a board whose RAM hash and cycle count are the same in both is not running at all; a master
-// whose cycles go on while SCENE, SUB, PHASE and STATE stay (the cabinets' freeze reads SCENE 6, SUB 2, PHASE 1,
-// STATE 2) is a game standing in its main loop.
+// whose cycles go on while SCENE, SUB, PHASE and STATE stay is a game standing in its main loop.
 //
 // The first dump's page side values (hub, net, frames, vb, last) are read at once, in the watchdog's own tick, before
 // its step 1 runs. The board words come back from each board's worker between two frames (lb-board-worker.js

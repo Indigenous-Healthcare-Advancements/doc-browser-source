@@ -56,3 +56,7 @@ before the page is served.
   day. 147 source files. `/room-seat`: the page, 54 modules and the room seat
   core, all matching the tag. `/pilot`: 33 modules, all matching the tag, and
   the two cores of release `web-2026.11.05-1`. Earlier tags have no record.
+- `web-2026.11.26-2`: recorded 2026-11-26 before the production deploy, from the
+  files the lobby will serve (doc-web 5e77d08). 152 source files. `/room-seat`:
+  the page, 54 modules and the room seat core, all matching the tag. `/pilot` is
+  unchanged since `web-2026.11.26-1` and is not recorded again.

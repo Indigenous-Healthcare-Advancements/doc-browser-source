@@ -38,7 +38,7 @@ const MB_INPUT_MASK_WORD = 48 >> 2;
 // M3 R-1 (msg.entryWatch): the room's master board0 also watches the
 // master entry words (mp-entry-watch.js), Rev C only.
 // LAB ONLY (net delay experiment, msg.netWatch): the game's link watchdog
-// (doc-ops research/claude/a04-link-timing: NETWORK ERROR flag 0x0C3B7748,
+// (the project's link timing decode: NETWORK ERROR flag 0x0C3B7748,
 // set after more than 32 polls with an unchanged comm packet number; poll
 // count 0x0C40A1B8), Rev C addresses. net_err is watched like the words
 // above; the poll count is reported as its maximum per 60 frames (wd_max),
@@ -111,7 +111,7 @@ function cardSwap(m) {
 //   'card-in'   { f, gen? }  the insert button went down on this board (the core loads the card file then, if there is one)
 //   'card-out'  { f, gen?, writes }  THE GAME TOLD THE READER TO EJECT THE CARD: the core says so in its own log
 //               ("Card ejected", flycast core/hw/naomi/card_reader.cpp), on the game's eject at the end of a card's
-//               game. Lab run of 2026-11-22 on Rev C (C:\dev\doc-lab\m3-playout-1121\eject-probe): the game writes
+//               game. Lab run of 2026-11-22 on Rev C (the eject probe): the game writes
 //               the card, its STATE goes to 0 about 16 s later, and the eject follows within about a second. Posted
 //               after the frame the core logged it in, and after one more look at the card file, so a write the game
 //               made just before its eject reaches the page first.

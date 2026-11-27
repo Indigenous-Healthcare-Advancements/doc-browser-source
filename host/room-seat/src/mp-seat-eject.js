@@ -21,7 +21,7 @@
 // 3 and 4 (persist in the tab, then the room write with the next seq and the
 // stint's last race nonce) are NOT done here: they belong to the seat
 // hand-off contract (heartbeat, checkout, saves, close, TURN retry), which
-// doc-web owns in its own round on claude/m3-room-seat-contract. Here every
+// doc-web owns in its own round. Here every
 // card write the board makes goes up the link to the lab room's desk
 // (mp-room.js), and the seat's leave('finish') then closes (step 5).
 // Rev C keeps today's behaviour: its card file is present all along and each
