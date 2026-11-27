@@ -12,16 +12,17 @@
 // (docs/care-events.md under host/ has the proposed shape). No network code.
 //
 // STATUS OF EVERY ADDRESS AND EVERY DECODE RULE HERE: from the engine notes,
-// not yet confirmed in a browser seat. Sources, by the tags used below:
-//   [note]   G: DerbyOwnersClub/claude-memory/m3-care-scene-recording-map-2026-11-22.md
-//   [e06]    doc-ops research/engine-bible/packets/e06-chooser/BUILDER.md (C1 to C10)
-//   [c13]    .../packets/c13-care-natural-paths/BUILDER.md (N1 to N6)
-//   [care]   .../packets/e03-e06-care/BUILDER.md and its VERIFY files
-//   [e05]    .../packets/e05-heart-writer-inventory/BUILDER.md
-//   [e07]    .../packets/e07-postrace/BUILDER.md and VERIFY.md, e07-reply-presentation, e07-reply-outcome
-//   [w1]     G: DerbyOwnersClub/knowledge/faq-decode-review-2026-09-30/reports/gaps/W1-food/VERIFY.md
-//   [revc]   G: DerbyOwnersClub/knowledge/CONFIRMED/we_revc.md
-//   [rider]  doc-browser-lab pkg/capture-6aee404eb350/round_rider.py (a lab rider: diagnostic, never evidence)
+// not yet confirmed in a browser seat. Sources, by the tags used below (the project's own research notes, not
+// published):
+//   [note]   the care scene recording map (2026-11-22)
+//   [e06]    the chooser decode (C1 to C10)
+//   [c13]    the natural care paths (N1 to N6)
+//   [care]   the care decode and its checks
+//   [e05]    the heart writer inventory
+//   [e07]    the post race decode, the reply presentation and the reply outcome
+//   [w1]     the food gap review (2026-09-30)
+//   [revc]   the confirmed Rev C notes
+//   [rider]  a lab rider (diagnostic, never evidence)
 // All of it is static decode of the stock Rev C program (or the rider); none
 // has been read in a live browser session. docs/care-events.md has, for each
 // word, the lab step that would confirm it. Rev C only (and Rev C Rebalanced,

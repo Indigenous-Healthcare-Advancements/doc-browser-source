@@ -2,7 +2,7 @@
 // Copyright (C) 2026 John R Reeves III
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// Rev C, static decode (doc-ops research/claude a04-link-timing boundary
+// Rev C, static decode (the project's link timing boundary
 // EVIDENCE E3 to E5 and REPRO; a01-growth-rng slots CLAIM S1). The master
 // board keeps each station's STATE as received over the ring in RX slot k
 // (byte +43, the top byte of the aligned word at +40). When the master's own
@@ -34,7 +34,7 @@ export const J99_STATE_WORD = 0x0C21109C;
 export const J99_WATCH = Object.freeze([['state', J99_STATE_WORD], ['phase', J99_PHASE_WORD]]);
 // The watch for a game file name: DOC '99's own, else Rev C's (the other
 // editions keep today's lab behaviour until their words are pinned).
-// Rev D (derbyocw): the same words as Rev C, moved (doc-ops research/claude a04-link-timing boundary CLAIM.md and
+// Rev D (derbyocw): the same words as Rev C, moved (the project's link timing boundary notes and
 // ram_map.json): every game word sits 0x2DCC above Rev C's, the RX bases 0x3410 above. Rev C's own words read 0 on
 // Rev D (EDITION_PORTS_REVD_CORE.md), so it must have its own table. Only PHASE and STATE (and the entry words below).
 export const REVD_PHASE_WORD = 0x0C21D050;
@@ -77,7 +77,7 @@ export function entryWatchFor(seats, game = REVC_GAME) {
 // LAB ONLY (the room debug page): which runners each station hosts, as the master holds them. A station's RX slot
 // carries one 240-byte record per runner it hosts (from +96); the aligned word at +76 of a record holds the
 // runner's controller (byte 0: 13 a CPU horse, below 13 a player's), its lane (byte 1, 0 to 11) and its finish
-// state (byte 2). Static decode (doc-ops research/engine-bible e17-virtual-station STATION_PROTOCOL 3.1 and 3.2),
+// state (byte 2). Static decode (the project's virtual station protocol notes, 3.1 and 3.2),
 // to be confirmed in a lab room; that lane + 1 is the number on the horse is not established. Four seat rooms
 // only (three records a station, the 816-byte path); Rev C, Rev D and DOC 2000 share the layout. Addresses only.
 export const OWNER_RECORDS = 3;

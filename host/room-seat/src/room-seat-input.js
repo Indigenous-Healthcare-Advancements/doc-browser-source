@@ -49,6 +49,17 @@ const ACTIONS = Object.keys(SEAT_ACTION_IDS);
 const BLOCKED = new Set(PLAYER_BLOCKED);
 const BLOCKED_MASK = PLAYER_BLOCKED.reduce((m, id) => m | (1 << id), 0);
 const isPlainObject = (o) => !!o && typeof o === 'object' && !Array.isArray(o);
+// The elements and roles that use Space themselves (they keep it; see onSpace in createRoomSeatInput).
+const SPACE_TAGS = new Set(['BUTTON', 'A', 'SUMMARY', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'LABEL', 'VIDEO', 'AUDIO']);
+const SPACE_ROLES = new Set(['button', 'checkbox', 'switch', 'radio', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'option', 'slider', 'link', 'textbox']);
+function usesSpace(t) {
+  if (!t || typeof t !== 'object') return false;
+  if (t.isContentEditable) return true;
+  if (SPACE_TAGS.has(typeof t.tagName === 'string' ? t.tagName.toUpperCase() : '')) return true;
+  let role = '';
+  try { role = typeof t.getAttribute === 'function' ? String(t.getAttribute('role') || '').toLowerCase() : ''; } catch { role = ''; }
+  return SPACE_ROLES.has(role);
+}
 
 const idAction = new Map(Object.entries(SEAT_ACTION_IDS).map(([a, id]) => [id, a]));
 // The published defaults, derived from input-map.js so they never drift from the pilot's.
@@ -192,6 +203,13 @@ export function createRoomSeatInput({ win = globalThis.window, storage } = {}) {
   // and so does any button while the input is suspended or for a key the game does not use.
   const inPageButtons = (t) => { try { return !!(t && typeof t.closest === 'function' && t.closest(SEAT_PAGE_BUTTONS)); } catch { return false; } };
   const unbind = win && typeof win.addEventListener === 'function' ? bindKeyboard(win, input, { gameFirst: (e) => inPageButtons(e && e.target) }) : () => {};
+  // SPACE NEVER SCROLLS THE SEAT PAGE (the pilot test of 2026-11-24: Space pressed just after the Sound button was
+  // clicked scrolled the page a screen down mid race). A clicked seat button gives the focus back to the page (below)
+  // and Space is no default game key, so the browser scrolled. On the page itself Space now does nothing (a Space
+  // mapped to an action still reaches the game, above); a control that uses Space keeps it (a dialog's button, a
+  // link, a field, a checkbox, or a seat button reached from the keyboard).
+  const onSpace = (e) => { if (e && e.code === 'Space' && !e.defaultPrevented && !usesSpace(e.target) && typeof e.preventDefault === 'function') e.preventDefault(); };
+  if (win && typeof win.addEventListener === 'function') win.addEventListener('keydown', onSpace);
   // And a seat button pressed with the mouse or a finger does not keep the focus (a keyboard press, detail 0, does:
   // its user is walking the buttons). The focus goes back to the page, where every key is the game's. Whatever the
   // click itself focused is let go too when it is another seat button (the menu's own), never a dialog's.
@@ -249,6 +267,7 @@ export function createRoomSeatInput({ win = globalThis.window, storage } = {}) {
     unbind();
     if (win && typeof win.removeEventListener === 'function') {
       win.removeEventListener('blur', release);
+      win.removeEventListener('keydown', onSpace);
       win.removeEventListener('visibilitychange', onVisibility);
       win.removeEventListener('storage', onStorage);
       if (win.document && typeof win.document.removeEventListener === 'function') { win.document.removeEventListener('visibilitychange', onVisibility); win.document.removeEventListener('click', onPageClick); }

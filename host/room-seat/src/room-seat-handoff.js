@@ -1,6 +1,6 @@
 // room-seat-handoff.js: the hand-off from doc-arcade's /rooms to the room
 // seat page (M3 step 1b, docs/seat-contract.md). A port of doc-arcade's
-// src/lib/roomSeatHandoff.ts (branch claude/m3-rooms-a2, a48ca16): the same
+// src/lib/roomSeatHandoff.ts: the same
 // key, version, age limit, field shapes and checks. Change nothing here
 // without changing it there (the version is `v`). No network, no card bytes.
 // Copyright (C) 2026 John R Reeves III

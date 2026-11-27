@@ -4,7 +4,7 @@
 // Copyright (C) 2026 John R Reeves III
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// A public room runs on a cabinet host (media8) whose LAN and tailnet
+// A public room runs on a cabinet host whose LAN and tailnet
 // addresses must never reach a player, and a player's LAN address is of no
 // use to the room. So both ends keep only GLOBAL unicast IPv4 candidates
 // (no loopback, private, CGNAT and tailnet, link-local, documentation,
