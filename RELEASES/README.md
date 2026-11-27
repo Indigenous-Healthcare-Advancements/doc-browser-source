@@ -60,3 +60,7 @@ before the page is served.
   files the lobby will serve (doc-web 5e77d08). 152 source files. `/room-seat`:
   the page, 54 modules and the room seat core, all matching the tag. `/pilot` is
   unchanged since `web-2026.11.26-1` and is not recorded again.
+- `web-2026.11.26-3`: recorded 2026-11-26 before the production deploy, from the
+  files the lobby will serve (doc-web 8d39654, Rev C Rebalanced seats). 154 source
+  files. `/room-seat`: the page, 54 modules and the room seat core, all matching
+  the tag. `/pilot` is unchanged since `web-2026.11.26-1` and is not recorded again.
