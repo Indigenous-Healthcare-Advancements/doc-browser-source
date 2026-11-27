@@ -1,0 +1,504 @@
+{
+  "schema": 1,
+  "release": "web-2026.11.26-2",
+  "name": "Derby Owners Club browser game: cores, game page and room seat page",
+  "source": {
+    "repository": "https://github.com/Indigenous-Healthcare-Advancements/doc-browser-source",
+    "tag": "web-2026.11.26-2",
+    "tag_object": "7bee61f6bae8bf641862ff0d1ccae6b111cf69ab",
+    "commit": "315caeb139b06d7e3d6efd873b7fce1d3ce926ce",
+    "tree": "fc1de071e51b7b563caf38230ba3de50020097d0",
+    "tagged": "2026-11-26T19:53:57-08:00",
+    "browse": "https://github.com/Indigenous-Healthcare-Advancements/doc-browser-source/tree/web-2026.11.26-2",
+    "download": "https://github.com/Indigenous-Healthcare-Advancements/doc-browser-source/archive/refs/tags/web-2026.11.26-2.zip",
+    "files": 152,
+    "file_list": "web-2026.11.26-2.sha256",
+    "file_list_sha256": "13eeaf4f72bae2bac28e2729565108050ccea63b8b36cd06dcfcd465909db273",
+    "archive": {
+      "made_with": "git -c core.autocrlf=false -c core.eol=lf archive --format=tar 315caeb139b06d7e3d6efd873b7fce1d3ce926ce",
+      "git_version": "git version 2.56.0.windows.3",
+      "bytes": 2703360,
+      "sha256": "0dc978d5c5622b3909c0dc667ff9e6b93da6851f026e9913210f589a345ad46b",
+      "note": "The zip GitHub offers is made by GitHub and is not hashed here; check its files against the file list."
+    }
+  },
+  "licences": {
+    "own_code": "GPL-2.0-or-later (LICENSE, COPYRIGHT)",
+    "cores": "GPL-2.0-only: each combined core carries picoTCP (GPL-2.0-only OR GPL-3.0-only); see COPYRIGHT and SOURCE.md section 8",
+    "third_party": "THIRD_PARTY_NOTICES.md",
+    "each_file": "Each source file keeps its own licence."
+  },
+  "build_steps": "SOURCE.md at this tag: section 3 (toolchain), 4 (rebuild), 5 (getting the same bytes), 9 (the room seat core)",
+  "dependencies": "Upstream Flycast 8412d3d8a and the submodule pins of SOURCE.md section 2; the version string inside each served core is listed below",
+  "game_data": "None. The tag passes the policy check (no ROM, BIOS, card, save or binary file types, nothing over 2 MB); the player supplies the game files.",
+  "served": {
+    "room-seat": {
+      "route": "/room-seat",
+      "built": "five-board core linked 2026-11-22 (SOURCE.md section 9); page and modules from doc-web 5e77d08",
+      "files": [
+        {
+          "path": "SOURCE.txt",
+          "what": "deploy note",
+          "bytes": 946,
+          "sha256": "9ffb1bdb8a7f1d870c6b441c69181ba7c8f9be6e60cfa5177b45b6d48ee87e87"
+        },
+        {
+          "path": "mp-seat.html",
+          "what": "page",
+          "bytes": 38031,
+          "sha256": "aead481d11dc3cf3c0a87196552adae14d0f6d78e18bde5e8f0dc08931b54e43",
+          "source": "host/room-seat/mp-seat.html",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/audio-ring.js",
+          "what": "module",
+          "bytes": 5601,
+          "sha256": "adb8cd4bde11930b092d2c2478e1d0eb2d94a4a7b67195635a09825f661169e9",
+          "source": "host/room-seat/src/audio-ring.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/audio-worklet.js",
+          "what": "module",
+          "bytes": 23764,
+          "sha256": "b12833fcb4c4d1f27734ec7b3a4d432c9649d25e36d634b4ab775cd1d9917b87",
+          "source": "host/room-seat/src/audio-worklet.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/card-store.js",
+          "what": "module",
+          "bytes": 11466,
+          "sha256": "b578deca633efa24abf6d1f53c225f41f6f410bb941448575cc1032e344b6bc5",
+          "source": "host/room-seat/src/card-store.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/care-recorder.js",
+          "what": "module",
+          "bytes": 23708,
+          "sha256": "e27d0f2a466882a50029a0fc67ebc3b6e590c195c927a68f9058ea38112658b2",
+          "source": "host/room-seat/src/care-recorder.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/core/flycast_libretro.js",
+          "what": "core",
+          "bytes": 234902,
+          "sha256": "a0b6f61ae6476b03f9ca7c34e8d6eab8e040b08dba62d3b8c4db57c9a2ce03f8"
+        },
+        {
+          "path": "src/core/flycast_libretro.wasm",
+          "what": "core",
+          "bytes": 4413274,
+          "sha256": "428cc0ccb66f64f56a834a5e34548d629fbabb693e8f0decd784ed66635e1be1",
+          "flycast_version": "v2.6-328-gb3e207a43"
+        },
+        {
+          "path": "src/core-bridge.js",
+          "what": "module",
+          "bytes": 5603,
+          "sha256": "18dd2c530e750b4fd8ec513a0c4b8e371f76aba65d26fbeadef65a93ec0dc7e3",
+          "source": "host/room-seat/src/core-bridge.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/core-pin.js",
+          "what": "module",
+          "bytes": 6520,
+          "sha256": "6d0f1f187da53710dfca2d856035259eeb85d22ccec55100cc0dc08578161e34",
+          "source": "host/room-seat/src/core-pin.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/edition-b-spec.js",
+          "what": "module",
+          "bytes": 2582,
+          "sha256": "22390c85bd811264362b9ec932fff481d6690e85b41f47308eb590727cef01fd",
+          "source": "host/room-seat/src/edition-b-spec.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/edition-b.js",
+          "what": "module",
+          "bytes": 21557,
+          "sha256": "94b75179959fa16741ffb14fd7e71efdfae8ea19c89a3b3d01a8155ceadd5bc9",
+          "source": "host/room-seat/src/edition-b.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/editions.js",
+          "what": "module",
+          "bytes": 3430,
+          "sha256": "f9336895ce9d3c7e99023a31db762ed5af1f957ede753eddd6290f2a5ad9f394",
+          "source": "host/room-seat/src/editions.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/feel-trace.js",
+          "what": "module",
+          "bytes": 1774,
+          "sha256": "e4b445b1eaf38c8e14da76478c15922918621be9b65174b9381ce5a171cdf1b5",
+          "source": "host/room-seat/src/feel-trace.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/game-check.js",
+          "what": "module",
+          "bytes": 13118,
+          "sha256": "8297250fb98be502b9f01de734f1899f343cb7ef2c2cb943c38af8dbc69c496a",
+          "source": "host/room-seat/src/game-check.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/game-pin.js",
+          "what": "module",
+          "bytes": 9168,
+          "sha256": "a6892da8231b72b6b278dac6df1d43129361e349b9e98ba971c8bffcd42742c5",
+          "source": "host/room-seat/src/game-pin.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/input-map.js",
+          "what": "module",
+          "bytes": 9691,
+          "sha256": "6322e7caa2b7f264665829638d36cfd3503b9aa4a31282882ba93eb3139847bb",
+          "source": "host/room-seat/src/input-map.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/lab-game-set.js",
+          "what": "module",
+          "bytes": 4312,
+          "sha256": "449437a4b8976c62f4ed95b5a9419b0f260c31b506068f65a4c4ca97eb690f8b",
+          "source": "host/room-seat/src/lab-game-set.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/lb-board-worker.js",
+          "what": "module",
+          "bytes": 44086,
+          "sha256": "bca0d463e58f18e217ef0a113d3b37b08d8a07ad985b0118b2d0fe41967a56ec",
+          "source": "host/room-seat/src/lb-board-worker.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/lb-frame-time.js",
+          "what": "module",
+          "bytes": 6999,
+          "sha256": "2e7e28ae56423ad3d6f849279cf34097057dba64082e6ac65b2a01049e4bc59e",
+          "source": "host/room-seat/src/lb-frame-time.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/lb-lockstep.js",
+          "what": "module",
+          "bytes": 12414,
+          "sha256": "58ccfe3361de50f71f8115cae6d388a31d20b76e2ef09eeeeea4bcfe646e5238",
+          "source": "host/room-seat/src/lb-lockstep.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/lb-net-layout.js",
+          "what": "module",
+          "bytes": 5082,
+          "sha256": "0cab7b662d9a2b0c61f6af688b15be21a701e098f2e1b0fedc9505fb0becfdd3",
+          "source": "host/room-seat/src/lb-net-layout.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/lb-ram-diff.js",
+          "what": "module",
+          "bytes": 9973,
+          "sha256": "14763e7eecd5f86e24146f725cedb32420aa686272a9d43cff94a611afaa3da7",
+          "source": "host/room-seat/src/lb-ram-diff.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-entry-watch.js",
+          "what": "module",
+          "bytes": 11373,
+          "sha256": "6f32bb0488d9a0b415cef1396e12575f46683b01eb0938f9a300814e56ec87d0",
+          "source": "host/room-seat/src/mp-entry-watch.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-game-cache.js",
+          "what": "module",
+          "bytes": 6596,
+          "sha256": "db51dc4032309ddccfc9540d5a1315edab24310ff48c0003fcc0a775bb42844b",
+          "source": "host/room-seat/src/mp-game-cache.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-hang-dump.js",
+          "what": "module",
+          "bytes": 8228,
+          "sha256": "2d7e793e1a68067d2024848ea75cb602a9b8f7938471c9e0456b0939b96e3c35",
+          "source": "host/room-seat/src/mp-hang-dump.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-lan.js",
+          "what": "module",
+          "bytes": 7933,
+          "sha256": "b2a5fb9080fe05fab79eccd3f88804226468eee1130fdc9f732d330004c3a3d7",
+          "source": "host/room-seat/src/mp-lan.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-netem.js",
+          "what": "module",
+          "bytes": 4002,
+          "sha256": "d2b31c882fa1f2a43372dc564822253712372b3b2b383dac6bed7ef4f7426220",
+          "source": "host/room-seat/src/mp-netem.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-public.js",
+          "what": "module",
+          "bytes": 11761,
+          "sha256": "ce286b17706eaac51f2ea9a450424f0c0042f61dcf19c08592b5c11aacbeb69c",
+          "source": "host/room-seat/src/mp-public.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-rtc.js",
+          "what": "module",
+          "bytes": 15639,
+          "sha256": "dd0b8008106ffd15b5f8747a16e47f5d2cabd835ca88e98b3a3a2a7b3cf52381",
+          "source": "host/room-seat/src/mp-rtc.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-seat-auto.js",
+          "what": "module",
+          "bytes": 5016,
+          "sha256": "0e5bbacfaa02d3372f453ec49431e32fa92935df9a5f30bfee5b5ce56e96028e",
+          "source": "host/room-seat/src/mp-seat-auto.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-seat-eject.js",
+          "what": "module",
+          "bytes": 7264,
+          "sha256": "beba7be92bb93a2500ef41f019266cec92b709d3c3ef1ab94d4d9ddfbcae3aca",
+          "source": "host/room-seat/src/mp-seat-eject.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-seat-link-worker.js",
+          "what": "module",
+          "bytes": 11610,
+          "sha256": "303b75b967f48d1dad78362877e416447c6c6b791d8e7ff764a82a71650183f0",
+          "source": "host/room-seat/src/mp-seat-link-worker.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-seat.js",
+          "what": "module",
+          "bytes": 177987,
+          "sha256": "0c0f12d58dedf5ae4d32f79a0254d2f5628c9e192bf519aeacc36bc8c0aa15c3",
+          "source": "host/room-seat/src/mp-seat.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-shadow-log.js",
+          "what": "module",
+          "bytes": 7252,
+          "sha256": "54de640d16db75f159a4c19c29ac7fa891661b1efa27b0d4725ba4c5f0a0100b",
+          "source": "host/room-seat/src/mp-shadow-log.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/mp-wire.js",
+          "what": "module",
+          "bytes": 18853,
+          "sha256": "f024d2402dafd6ea976f8f4f3e0aaa99c00e9a83c8f8788630002d92135b4b7e",
+          "source": "host/room-seat/src/mp-wire.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/race-pair.js",
+          "what": "module",
+          "bytes": 8567,
+          "sha256": "24d8a7939a1e1bbe93c97d4832f6ecb933c7a705813c1733ca1c5f69f43b5827",
+          "source": "host/room-seat/src/race-pair.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/rom-store.js",
+          "what": "module",
+          "bytes": 5852,
+          "sha256": "d00c457630c18defbd382ac579e00f8fac56e8a6cf7978cf58b98a24b1e8930d",
+          "source": "host/room-seat/src/rom-store.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-closing.js",
+          "what": "module",
+          "bytes": 16820,
+          "sha256": "cc2d2175ccab8c0bad2169b658687088b9e0adccaca82632ed1066fbe6f4045e",
+          "source": "host/room-seat/src/room-closing.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-lease-session.js",
+          "what": "module",
+          "bytes": 7372,
+          "sha256": "c5f7039e69d41444a3c3fdcf4cf56a538fae1dae750563e412e8cdf27dd91aa9",
+          "source": "host/room-seat/src/room-lease-session.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-main-view.js",
+          "what": "module",
+          "bytes": 12943,
+          "sha256": "59714b6ebf44851692b45bd234cb278fa751f038bde3491693e90af0a08e3e4c",
+          "source": "host/room-seat/src/room-main-view.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-nvmem.js",
+          "what": "module",
+          "bytes": 12620,
+          "sha256": "64d7a74d5ea333e58cf686dacc19f3aafda8d5362255a39dbebe4c9f6bc5c5d8",
+          "source": "host/room-seat/src/room-nvmem.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-save-queue.js",
+          "what": "module",
+          "bytes": 21059,
+          "sha256": "81aef01bc3c63996ac091bc33f9af9fc40a02f2f070a5395d86d025c74134cc7",
+          "source": "host/room-seat/src/room-save-queue.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-seat-audio.js",
+          "what": "module",
+          "bytes": 31274,
+          "sha256": "b08525a15f1f273a04383ce5617ed300b443225200e27dc760d1cd794f68103c",
+          "source": "host/room-seat/src/room-seat-audio.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-seat-chooser.js",
+          "what": "module",
+          "bytes": 14101,
+          "sha256": "fbca112cd28f3441d821000ca62e36ce2da741ee2770407a8ce5d9aa9259a991",
+          "source": "host/room-seat/src/room-seat-chooser.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-seat-controls.js",
+          "what": "module",
+          "bytes": 16680,
+          "sha256": "8c9b6e04d188f3f557de94b093d8129ae9c02b916a554ffef0b701772cdddb7f",
+          "source": "host/room-seat/src/room-seat-controls.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-seat-handoff.js",
+          "what": "module",
+          "bytes": 20410,
+          "sha256": "57ac0583cf8aae82c306d2e7ec6a733854f5384eb8a1b91d5220185b6afc5bfc",
+          "source": "host/room-seat/src/room-seat-handoff.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-seat-input.js",
+          "what": "module",
+          "bytes": 16975,
+          "sha256": "c086ddabaa91a0838191c6d83fc150c695de9216750e659107024d2aef3dc486",
+          "source": "host/room-seat/src/room-seat-input.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-seat-layout.js",
+          "what": "module",
+          "bytes": 16998,
+          "sha256": "816c8c2e19a3129cd5b076ecb527007e7496a1e1ded527cbb774fbc5561ffea8",
+          "source": "host/room-seat/src/room-seat-layout.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-seat-net.js",
+          "what": "module",
+          "bytes": 6282,
+          "sha256": "b6794a2782082f220923c5acdc7fae43b19ea3569a2917cc0bbb0e24a94ceff5",
+          "source": "host/room-seat/src/room-seat-net.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-seat-pad-layout.js",
+          "what": "module",
+          "bytes": 22735,
+          "sha256": "2654c789b063159a323e550a111c4279553291abb6b498e86aa9c087046aacf9",
+          "source": "host/room-seat/src/room-seat-pad-layout.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-seat-pad.js",
+          "what": "module",
+          "bytes": 24869,
+          "sha256": "3be70760a0dff886f47ef3fa370a659c5fa3345076fddefe586efedb7ead9581",
+          "source": "host/room-seat/src/room-seat-pad.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-seat-phone.js",
+          "what": "module",
+          "bytes": 6673,
+          "sha256": "7960f3da3b6301b9fd4c36ec964ee47ab0490938fbbdcffb29e59ef998cc0668",
+          "source": "host/room-seat/src/room-seat-phone.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-seat-report.js",
+          "what": "module",
+          "bytes": 29751,
+          "sha256": "c2d4364dd91c72a0b529b043bef02c3dfd1f583bb30b1ebdeefbeec0e23d256c",
+          "source": "host/room-seat/src/room-seat-report.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-seat-swap.js",
+          "what": "module",
+          "bytes": 18202,
+          "sha256": "4565f9ad8b5f75c80343ea05cdfc244093ebd5af4b48481f1d9e4e575f9bacc9",
+          "source": "host/room-seat/src/room-seat-swap.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/room-stash.js",
+          "what": "module",
+          "bytes": 9381,
+          "sha256": "f336b4411aecb1d436d37d148503a7c34cb0a0d3316b3c69d5cd0d4aa0322ffa",
+          "source": "host/room-seat/src/room-stash.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/seat-feel.js",
+          "what": "module",
+          "bytes": 5704,
+          "sha256": "cff9b31efb1477518da0893f17f220a9de0b75b87b1eb9966de896f2a4572d89",
+          "source": "host/room-seat/src/seat-feel.js",
+          "match": "same apart from line ends"
+        },
+        {
+          "path": "src/seat-lease.js",
+          "what": "module",
+          "bytes": 17535,
+          "sha256": "5a21eef9ce184d985121a7891a99c20d5a539ba7d05f27533dece1d5f8764a41",
+          "source": "host/room-seat/src/seat-lease.js",
+          "match": "same apart from line ends"
+        }
+      ]
+    }
+  },
+  "recorded_utc": "2026-11-27T03:53:57Z",
+  "reviewer": null,
+  "source_kept_until": "Project policy: kept public indefinitely, and never less than three years after these files were last served."
+}
