@@ -113,7 +113,9 @@ export function validRoomSeatHandoff(h, now = Date.now(), expect) {
   if (!str('room_token') || !TOKENISH.test(x.room_token)) return false;
   if (!str('room_ticket') || !TOKENISH.test(x.room_ticket)) return false;
   if (!str('lease_id') || !UUID.test(x.lease_id) || !str('horse_id') || !UUID.test(x.horse_id)) return false;
-  if (x.release !== 'doc99' && x.release !== 'revc') return false;
+  // The room releases a seat can be handed: Rev C, DOC '99 and Rev C Rebalanced (revcb, edition B, built in page
+  // memory from the stock Rev C files; core-pin.js releaseEdition and seatEdition). Rev D and DOC 2000 wait for a core.
+  if (x.release !== 'doc99' && x.release !== 'revc' && x.release !== 'revcb') return false;
   if (!str('cabinet_id') || !str('lease_expires_at') || !str('rom') || typeof x.horse_name !== 'string') return false;
   // A new horse (roomSeatHandoff.ts checklist item 6): new_horse is true or absent, never anything else.
   if (x.new_horse !== undefined && x.new_horse !== true) return false;
