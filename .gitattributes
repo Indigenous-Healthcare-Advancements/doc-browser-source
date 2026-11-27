@@ -5,3 +5,5 @@
 scripts/build-win.ps1 -text
 scripts/link-win.ps1 -text
 scripts/link-linkbus2.ps1 -text
+# The release file lists are read by sha256sum -c; keep LF line ends on every checkout.
+RELEASES/*.sha256 text eol=lf
