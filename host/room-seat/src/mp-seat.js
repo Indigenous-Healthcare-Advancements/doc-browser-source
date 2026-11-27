@@ -140,6 +140,8 @@ const REPORT_SAID_MS = 6000;
 const FILES_HOLD_MS = 600000;
 const FILES_ROOM_MS = 60000;
 const FILES_HELD_TEXT = 'Your seat is held while you choose your game files.';
+// The files panel of a Rev C Rebalanced seat (filesAskShow): it takes the stock Rev C files and builds Rebalanced from them.
+const REVCB_FILES_TEXT = 'Rev C Rebalanced runs from your own stock Rev C files. Choose your Rev C game file and BIOS file (two .zip files; select both together). This seat builds Rebalanced from them on this device. They stay in this browser, so you only do this once on each device.';
 const FILES_READY_TEXT = 'Game files ready.';
 const FILES_END_TEXT = 'Your seat was given back because no game files were chosen. Join again when you have them ready.';
 const FILES_END_PICK_TEXT = 'You can still choose them here now, so they are ready when you join again.';
@@ -743,8 +745,11 @@ function filesAskShow(why = null) {
   if (filesAskUp()) { if (why) filesUi.status.textContent = why; return; }
   state.filesAsk = { up: true, at: Date.now() };
   const set = labGameSet(releaseEdition(handoff.release));
-  const label = handoff.release === 'revc' ? 'Rev C' : handoff.release === 'doc99' ? "DOC '99" : '';
-  if (filesUi.text && label && label !== 'Rev C') filesUi.text.textContent = `This game runs from your own copy. Choose your ${label} game file and BIOS file (two .zip files; select both together). They stay in this browser, so you only do this once on each device.`;
+  const label = handoff.release === 'revc' ? 'Rev C' : handoff.release === 'doc99' ? "DOC '99" : handoff.release === 'revcb' ? 'Rev C Rebalanced' : '';
+  // Rev C Rebalanced runs from the stock Rev C files (editions.js filesFrom 'A'): the player must not go looking for a
+  // "Rebalanced" file, so the panel says which files to choose.
+  if (filesUi.text && handoff.release === 'revcb') filesUi.text.textContent = REVCB_FILES_TEXT;
+  else if (filesUi.text && label && label !== 'Rev C') filesUi.text.textContent = `This game runs from your own copy. Choose your ${label} game file and BIOS file (two .zip files; select both together). They stay in this browser, so you only do this once on each device.`;
   if (filesUi.names && set) { filesUi.names.textContent = `The two files: ${set.game} (the game) and naomi.zip (the BIOS).`; filesUi.names.hidden = false; }
   filesUi.status.textContent = why || '';
   filesUi.box.hidden = false;

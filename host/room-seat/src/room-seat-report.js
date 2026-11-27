@@ -271,7 +271,9 @@ export function buildSeatReport({ id, now = Date.now(), note = '', handoff = nul
     client_time: new Date(now).toISOString(),
     clock_skew_ms: Number.isFinite(h.clock_skew_ms) ? Math.round(h.clock_skew_ms) : null,
     note: cleanNote(note),
-    release: h.release === 'revc' || h.release === 'doc99' ? h.release : null,
+    // revcb is sent only by a Rev C Rebalanced seat, which exists only once the lobby offers revcb rooms (and so
+    // accepts revcb in a report).
+    release: h.release === 'revc' || h.release === 'doc99' || h.release === 'revcb' ? h.release : null,
     room_tag: typeof h.room_tag === 'string' && /^[0-9a-f]{8}$/i.test(h.room_tag) ? h.room_tag.toLowerCase() : null,
     slot: int(h.slot, 1, 64),
     lease_id: uuid(v.lease_id),
