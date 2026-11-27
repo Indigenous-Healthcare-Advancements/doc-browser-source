@@ -21,7 +21,8 @@ it must produce) so the page can refuse any other file. It holds no game bytes.
 | `flycast/patches-linkbus2/` | LinkBus series applied on top (five-board linked cabinet core) |
 | `host/` | The game page, its JavaScript modules and the C/C++ shims linked into the cores |
 | `stubs/` | Source for the small stub object the wasm link needs |
-| `scripts/` | Windows build and link scripts for the cores, the release manifest script and the repository policy check |
+| `scripts/` | Windows build and link scripts for the cores, the release manifest and release record scripts, and the repository policy check |
+| `RELEASES/` | One record per release tag: the SHA-256 of every source file and of every served file, and the source availability notice (`RELEASES/README.md`) |
 
 How to rebuild each served core, and which commit matches it: `SOURCE.md`.
 
@@ -29,6 +30,7 @@ How to rebuild each served core, and which commit matches it: `SOURCE.md`.
 
     python scripts/check_no_rom.py
     node --test scripts/release-manifest.test.mjs
+    node --test scripts/release-record.test.mjs
 
 The policy check refuses ROM and binary file types, any file over 2 MB, build
 output, and em or en dashes in our own text.

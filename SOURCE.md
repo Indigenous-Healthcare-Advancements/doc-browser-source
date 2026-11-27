@@ -258,6 +258,14 @@ The SHA-256 of each released core file is recorded in the deploy's
   fails if a core differs from the manifest.
 - The script reads only `flycast_libretro.js` and `flycast_libretro.wasm`
   under `src/core` and `src/lb/core`. It never reads or hashes game files.
+- After the deploy that serves a new tag, write its release record from
+  the tag's checkout (`RELEASES/README.md` has the command):
+  `node scripts/release-record.mjs --tag <tag> --repo-url <public repository> --room-seat <doc-arcade>/room-assets --pilot <doc-arcade>/pilot-assets`.
+  It writes `RELEASES/<tag>.sha256` (every file of the tag) and
+  `RELEASES/<tag>.json` (the archive SHA-256, licences, build steps, the
+  version in each served core, and every served file with its SHA-256 and
+  source file), and refuses a tag that breaks the policy check. Commit the
+  two files on a branch after the tag; the tag itself is never moved.
 
 ## 8. Licence status of the served cores
 
