@@ -1,0 +1,89 @@
+From 9f61211c35831cbfbbbca0fafa87158b92435cd9 Mon Sep 17 00:00:00 2001
+From: John R Reeves III <johnreevesiii@outlook.com>
+Date: Sat, 28 Nov 2026 05:24:38 -0800
+Subject: [PATCH] addrspace: keep the SH4 context block across setPlatform (no
+ nvmem)
+
+Without nvmem (the browser build), addrspace::initMappings freed and
+reallocated p_sh4rcb at every setPlatform, so also at game load. The SH4
+executors keep pointers into it from their Init, which runs before that
+load: Sh4Interpreter::ctx (getContext()) with its Sh4Cycles, icache and
+ocache (sh4_interpreter.cpp), and the wasm dynarec's sh4ctx (init();
+driver.cpp passes *getContext()). The browser core worked only because
+the allocator returned the same address. A build whose static data grew
+moved the heap base, the block moved on the ring boards, and they sat at
+PC 0 while the old pointers wrote into the freed block.
+
+The block's size does not depend on the platform, so it is now
+allocated once and kept until addrspace::release(); its fpcb table and
+its context are still reset at every initMappings. WasmDynarec::mainloop
+also checks that its kept context and the driver's argument are the
+live p_sh4rcb->cntx and stops with a FlycastException if not, so a
+future move is loud instead of a silent PC 0.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MGX7KMEfqCf9PhCQoKWA2z
+---
+ core/hw/mem/addrspace.cpp  | 20 ++++++++++++++------
+ core/rec-wasm/rec_wasm.cpp | 13 +++++++++++++
+ 2 files changed, 27 insertions(+), 6 deletions(-)
+
+diff --git a/core/hw/mem/addrspace.cpp b/core/hw/mem/addrspace.cpp
+index bb1e7a13d..32ca2a942 100644
+--- a/core/hw/mem/addrspace.cpp
++++ b/core/hw/mem/addrspace.cpp
+@@ -393,3 +393,7 @@ bool reserve()
+ 
+-static void termMappings()
++// Without nvmem, initMappings keeps p_sh4rcb (keepRcb) and only release() frees it. Its size does not depend on the
++// platform, and the SH4 executors and dynarecs keep pointers into it from their Init (Sh4Interpreter::ctx and its
++// Sh4Cycles, icache and ocache, the dynarec's own context pointer). Freeing and reallocating it at setPlatform (game
++// load) left all of them on the freed block whenever the allocator returned another address.
++static void termMappings(bool keepRcb = false)
+ {
+@@ -397,4 +401,7 @@ static void termMappings()
+ 	{
+-		free_pages(p_sh4rcb);
+-		p_sh4rcb = nullptr;
++		if (!keepRcb)
++		{
++			free_pages(p_sh4rcb);
++			p_sh4rcb = nullptr;
++		}
+ 		mem_b.free();
+@@ -409,3 +416,3 @@ void initMappings()
+ {
+-	termMappings();
++	termMappings(true);
+ 	// Fallback to statically allocated buffers, this results in slow-ops being generated.
+@@ -415,4 +422,5 @@ void initMappings()
+ 
+-		// Allocate it all and initialize it.
+-		p_sh4rcb = (Sh4RCB*)malloc_pages(sizeof(Sh4RCB));
++		// Allocate it all and initialize it. p_sh4rcb is allocated once and kept (see termMappings).
++		if (p_sh4rcb == nullptr)
++			p_sh4rcb = (Sh4RCB*)malloc_pages(sizeof(Sh4RCB));
+ #if FEAT_SHREC != DYNAREC_NONE
+diff --git a/core/rec-wasm/rec_wasm.cpp b/core/rec-wasm/rec_wasm.cpp
+index d6a3f9131..3a89a636b 100644
+--- a/core/rec-wasm/rec_wasm.cpp
++++ b/core/rec-wasm/rec_wasm.cpp
+@@ -6233,2 +6233,15 @@ public:
+ 	{
++		// The context kept at init() and the one the driver passes (its
++		// getContext() + sizeof(Sh4Context)) must both be the live
++		// p_sh4rcb->cntx. They were not when setPlatform reallocated the
++		// block at game load (addrspace::initMappings, no nvmem): the guest
++		// then sat at PC 0 and the old pointers wrote into freed memory.
++		// Stop loudly instead of running on a stale context.
++		Sh4Context* live = &Sh4cntx;
++		if (sh4ctx != live || (u8*)cntx != (u8*)live + sizeof(Sh4Context))
++		{
++			ERROR_LOG(DYNAREC, "rec_wasm: SH4 context moved: init %p, driver %p, live %p",
++					sh4ctx, (u8*)cntx - sizeof(Sh4Context), live);
++			throw FlycastException("rec_wasm: SH4 context moved after init");
++		}
+ 		// Sh4Interpreter::Instance is now set in Sh4Recompiler's constructor
+-- 
+2.56.0.windows.3
+
