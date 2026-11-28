@@ -31,7 +31,8 @@ down, in `src/lb/`, with their relative imports adjusted to match;
 
 The room seat page at `/room-seat` is `host/room-seat/mp-seat.html` with the
 modules of `host/room-seat/src/` beside it, and one core, in `src/core/`: the
-five-board core linked with one more export. Section 9 describes that core.
+five-board core linked with one more export (section 9), with one Flycast patch
+more since 2026-11-28 (section 10).
 
 The deployed `flycast_libretro.js` files pass through Git with line-ending
 normalisation, so the 16 CRLF line ends the linker writes into each become
@@ -41,20 +42,23 @@ LF. The `.wasm` files are copied byte for byte.
 
 Everything below is in this repository except upstream Flycast itself.
 
-| | Single-board core | Five-board core |
-|---|---|---|
-| Upstream base | Flycast 8412d3d8a391 (https://github.com/flyinghead/flycast) | same |
-| Patch series | `flycast/patches/0001` to `0023` | `flycast/patches/0001` to `0023`, then `flycast/patches-linkbus2/0001` to `0010` |
-| Resulting Flycast tree | commit 4cb999d50434, tree 8fee3edf1bc4 | commit b3e207a43bcf, tree 9369df86118d |
-| Version string inside the wasm | `v2.6-318-g4cb999d50` | `v2.6-328-gb3e207a43` |
-| Library build | `scripts/build-win.ps1` | `scripts/build-win.ps1 -SourceDir <ExtRoot>/wt-linkbus2` |
-| Link | `scripts/link-win.ps1` | `scripts/link-linkbus2.ps1` |
-| Host shim linked in | `host/shim/libretro_shim.c`, `core_config_shim.cpp`, `debug_state_shim.cpp`, `stubs/flycast_stubs.c` | the same plus `host/shim/linkbus_shim.cpp` |
+| | Single-board core (`/pilot`) | Five-board core (`/pilot`) | Room seat core (`/room-seat`) |
+|---|---|---|---|
+| Upstream base | Flycast 8412d3d8a391 (https://github.com/flyinghead/flycast) | same | same |
+| Patch series | `flycast/patches/0001` to `0023` | `flycast/patches/0001` to `0023`, then `flycast/patches-linkbus2/0001` to `0010` | `flycast/patches/0001` to `0023`, then `flycast/patches-linkbus2/0001` to `0011` |
+| Resulting Flycast tree | commit 4cb999d50434, tree 8fee3edf1bc4 | commit b3e207a43bcf, tree 9369df86118d | commit 9f61211c3583, tree a3a343d0e871 |
+| Version string inside the wasm | `v2.6-318-g4cb999d50` | `v2.6-328-gb3e207a43` | `v2.6-329-g9f61211c3` |
+| Library build | `scripts/build-win.ps1` | `scripts/build-win.ps1 -SourceDir <ExtRoot>/wt-linkbus2` | the same |
+| Link | `scripts/link-win.ps1` | `scripts/link-linkbus2.ps1` at tag `web-2026.11.05-1` | `scripts/link-linkbus2.ps1` |
+| Host shim linked in | `host/shim/libretro_shim.c`, `core_config_shim.cpp`, `debug_state_shim.cpp`, `stubs/flycast_stubs.c` | the same plus `host/shim/linkbus_shim.cpp` at tag `web-2026.11.05-1` | the same plus `host/shim/linkbus_shim.cpp` |
 
-The patch series, shims, stubs and link scripts in this repository are the
-ones the cores of release `web-2026.11.05-1` were built from (single-board:
+The two `/pilot` cores are those of release `web-2026.11.05-1` (single-board:
 commit 4cb999d50434; five-board: commit b3e207a43bcf; both built 2026-11-05
-by the recipe in section 4). Section 7 says how a release is tagged.
+by the recipe in section 4). The patch series, shims, stubs and link scripts
+in this repository build the single-board core and the room seat core as
+served (sections 9 and 10); for the `/pilot` five-board core, use this file
+and the scripts at tag `web-2026.11.05-1`. Section 7 says how a release is
+tagged.
 
 Upstream submodules used by the build, all pinned by the Flycast tree:
 libchdr 5f82799f2, tinygettext 41572a67f (and its tinycmmc 9a51e1380), asio
@@ -101,7 +105,8 @@ foreach ($t in 'wt-8412d3d8a', 'wt-linkbus2') {
 git -C <ExtRoot>\wt-linkbus2 am --keep-cr --committer-date-is-author-date <doc-browser-source>\flycast\patches-linkbus2\*.patch
 
 # Checks: wt-8412d3d8a HEAD is 4cb999d50434f7ad00bdbee2ef0d62b68804bdbe;
-#         wt-linkbus2 HEAD is b3e207a43bcf4d54585f9e04bbde349eccc5cfa4.
+#         wt-linkbus2 HEAD is 9f61211c35831cbfbbbca0fafa87158b92435cd9
+#         (after patch 0010 it was b3e207a43bcf4d54585f9e04bbde349eccc5cfa4).
 
 # 3. Libraries (about 2 minutes each on 32 threads)
 powershell -NoProfile -File <doc-browser-source>\scripts\build-win.ps1 -ExtRoot <ExtRoot>
@@ -114,7 +119,8 @@ powershell -NoProfile -File <doc-browser-source>\scripts\link-linkbus2.ps1 -ExtR
 
 Outputs: `<ExtRoot>\build-wasm\link-out\flycast_libretro.{js,wasm}` (single
 board) and `<ExtRoot>\build-wasm\link-out-linkbus2\flycast_libretro.{js,wasm}`
-(five board). Each script writes a log and a provenance record to
+(the room seat core). For the `/pilot` five-board core, follow this section at
+tag `web-2026.11.05-1`. Each script writes a log and a provenance record to
 `<ExtRoot>\build-logs`. The header of each script explains its options;
 `build-win.ps1` passes `-DUSE_XBRZ=OFF`, `-DUSE_LIBCDIO=OFF` and
 `-DUSE_BUNDLED_GAME_DATA=OFF`, and patch 0023 turns `USE_ISOFS` off by default
@@ -143,7 +149,8 @@ swap the prefix in your output before hashing (section 6 did this).
 
 Flycast's CMake runs `git describe --tags` at configure time and stores the
 result. Both trees, rebuilt from the patches with the committer settings
-above, are commits 4cb999d50434 and b3e207a43bcf again, so the strings match.
+above, are commits 4cb999d50434 and 9f61211c3583 again (b3e207a43bcf at tag
+`web-2026.11.05-1`), so the strings match.
 
 (Until release `web-2026.11.05-1` the five-board core carried the string
 `v2.6-323-g888703467`, a commit that existed only on the build PC; section 6
@@ -334,3 +341,64 @@ SHA-256 digest of `flycast_libretro.js` (as linked, with the 16 CRLF line ends
 the linker writes) and of `flycast_libretro.wasm`, and the page refuses any
 other core. Those two digests are the reference for a rebuild; a wasm built at
 another source path differs in its embedded path strings (5.1).
+
+## 10. The room seat core with patch 0011 (the SH4 context block kept across `setPlatform`), 2026-11-28
+
+The room seat page and the rooms run the core of section 9 with one Flycast
+patch more, `flycast/patches-linkbus2/0011`. The game page at `/pilot` still
+serves the cores of release `web-2026.11.05-1`, which this change does not
+touch.
+
+What changed, compared with the core of section 9:
+
+- Flycast, one patch:
+  `0011-addrspace-keep-the-SH4-context-block-across-setPlatf.patch` (2
+  files). Without nvmem (the browser build), `addrspace::initMappings` freed
+  and allocated again the SH4 context block (`p_sh4rcb`) at every
+  `setPlatform`, so also at game load. Four pointers kept from
+  `Emulator::init` still held the old address: `Sh4Interpreter::ctx`, the
+  `Sh4Cycles` context pointers, `WasmDynarec::sh4ctx` and the argument of the
+  wasm mainloop. The core of section 9 works only because the new block
+  happens to land where the old one was; with more static data in a build,
+  every linked board stops at PC 0 without an error.
+  - `core/hw/mem/addrspace.cpp` allocates the block once and frees it only in
+    `addrspace::release()`. Its context and its fpcb table are still reset at
+    every `initMappings`, as before. The nvmem path is unchanged.
+  - `core/rec-wasm/rec_wasm.cpp` checks at the top of `WasmDynarec::mainloop`
+    that the context is the live one. If it is not, it logs the three
+    addresses and stops the core with an error.
+- The patch is made with one line of context (`git format-patch -U1`).
+  Applied after 0001 to 0010 as section 4 says, it gives commit
+  9f61211c35831cbfbbbca0fafa87158b92435cd9 (tree a3a343d0e871), so the
+  version string inside the wasm is `v2.6-329-g9f61211c3`.
+
+What did not change: the host shims (`host/shim/`), the stubs and the link
+script are those of section 9. The single-board core is untouched.
+
+To rebuild it, follow section 4 as written: the five-board tree with all
+eleven patches of `flycast/patches-linkbus2`, `scripts/build-win.ps1
+-SourceDir <ExtRoot>\wt-linkbus2`, then `scripts/link-linkbus2.ps1`. Link with
+an emsdk whose system libraries are the release's prebuilt ones (5.4): a
+locally rebuilt library cache changes one embedded path.
+
+To rebuild the core of section 9 (served at `/room-seat` until this release),
+use this file and the patch series at tag `web-2026.11.26-3`.
+
+Checks made on the build PC, 2026-11-28:
+
+1. The same library build of commit b3e207a43bcf gave the library of the
+   section 9 core byte for byte, and the same link of it gave the section 9
+   core byte for byte, so the toolchain was the released one.
+2. The new core was linked three times and every link gave the same bytes.
+3. The old and the new core ran 24,000 frames on six linked boards with four
+   seats and gave identical results at all 200 samples, as two runs of the old
+   core did. On one board, 6,000 frames: identical at all 101 samples.
+4. With 265,792 bytes more static data linked in (a lab build only), the old
+   core stopped every ring board at PC 0, and the new core linked and matched
+   the unpadded old core at all 25 samples to frame 3,000.
+
+The page pins the core it loads, as in section 9: `host/room-seat/src/core-pin.js`
+holds the SHA-256 digest of `flycast_libretro.js` (2d86310335f8..., 234,902
+bytes as linked, with the 16 CRLF line ends the linker writes) and of
+`flycast_libretro.wasm` (2cee5239ac55..., 4,413,662 bytes), and the page
+refuses any other core. The release record (`RELEASES/`) lists both in full.

@@ -29,15 +29,17 @@ export const CORE_JS_FILE = 'flycast_libretro.js';
 export const CORE_WASM_FILE = 'flycast_libretro.wasm';
 
 /**
- * The shipped core: Flycast commit b3e207a43 (the library of doc-browser-source tag web-2026.11.05-1, unchanged),
- * linked with one more host shim export, shim_nvmem_copy (host/shim/linkbus_shim.cpp; scripts/BUILD.md, change note
- * 2026-11-22), which copies the battery memory out for the room server (room-nvmem.js). The link before it, without
- * that export, was js d7bd2e87... wasm 6b4022ed... (web-2026.11.05-1).
+ * The shipped core: Flycast commit 9f61211c3, that is b3e207a43 (the five-board series of doc-browser-source tag
+ * web-2026.11.05-1) plus flycast/patches-linkbus2/0011, which keeps the SH4 context block across setPlatform
+ * (scripts/BUILD.md, change note 2026-11-28), linked with the host shims of the 2026-11-22 core (with the export
+ * shim_nvmem_copy, which copies the battery memory out for the room server, room-nvmem.js). Earlier links:
+ * b3e207a43 with shim_nvmem_copy, js a0b6f61a... wasm 428cc0cc... (2026-11-22); b3e207a43 without that export,
+ * js d7bd2e87... wasm 6b4022ed... (web-2026.11.05-1).
  */
 export const SHIPPED_CORE = Object.freeze({
-  core: 'b3e207a43',
-  js: 'a0b6f61ae6476b03f9ca7c34e8d6eab8e040b08dba62d3b8c4db57c9a2ce03f8',
-  wasm: '428cc0ccb66f64f56a834a5e34548d629fbabb693e8f0decd784ed66635e1be1',
+  core: '9f61211c3',
+  js: '2d86310335f8d720725945cf60b3574722892e7728a4362ef2406b4070bd21cb',
+  wasm: '2cee5239ac556e69c451ced2ed55de28e3dfd2941a8d654431dbca751fc752f4',
   editions: Object.freeze(['A', 'B', 'J99']),
 });
 

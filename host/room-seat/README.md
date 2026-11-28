@@ -5,8 +5,8 @@ Copyright (C) 2026 John R Reeves III. GPL-2.0-or-later.
 The page a player opens to take one seat in a shared room: the player's own
 game board runs in the player's browser and is linked to a room that runs the
 rest of the cabinet. This folder is the page exactly as it is served, copied
-from doc-web commit 8d39654 (8d39654e1c7558e1bcd157129c4b4ebbe3b46b2f,
-2026-11-26): the page and 54 modules. There is no build step; the modules are
+from doc-web commit 59b6234 (59b6234876cbd6bdc4a4c5a2b2ad8fd268e4f837,
+2026-11-28): the page and 54 modules. There is no build step; the modules are
 served as written.
 
 ## Served layout
@@ -15,7 +15,7 @@ served as written.
 |---|---|
 | the seat page | `mp-seat.html` |
 | `src/*.js` | `src/*.js` |
-| `src/core/flycast_libretro.{js,wasm}` | the five-board core linked with the `shim_nvmem_copy` export (`../../SOURCE.md` section 9); `src/core-pin.js` holds its two SHA-256 digests and the page refuses any other core |
+| `src/core/flycast_libretro.{js,wasm}` | the five-board core with Flycast patch 0011, linked with the `shim_nvmem_copy` export (`../../SOURCE.md` sections 9 and 10); `src/core-pin.js` holds its two SHA-256 digests and the page refuses any other core |
 
 The page needs cross-origin isolation (COOP `same-origin`, COEP
 `require-corp`) for SharedArrayBuffer.

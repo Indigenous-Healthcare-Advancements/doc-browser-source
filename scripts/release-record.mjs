@@ -217,7 +217,7 @@ function buildRecord(opts, now = new Date()) {
         third_party: 'THIRD_PARTY_NOTICES.md',
         each_file: 'Each source file keeps its own licence.',
       },
-      build_steps: 'SOURCE.md at this tag: section 3 (toolchain), 4 (rebuild), 5 (getting the same bytes), 9 (the room seat core)',
+      build_steps: 'SOURCE.md at this tag: section 3 (toolchain), 4 (rebuild), 5 (getting the same bytes), 9 and 10 (the room seat core)',
       dependencies: 'Upstream Flycast 8412d3d8a and the submodule pins of SOURCE.md section 2; the version string inside each served core is listed below',
       game_data: 'None. The tag passes the policy check (no ROM, BIOS, card, save or binary file types, nothing over 2 MB); the player supplies the game files.',
       served,
